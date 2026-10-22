@@ -752,7 +752,7 @@ All other internal routes stay denied to the BFF. O&M LLD §10.2 is amended to n
 
 ### 10.6 Password handling (C-4, resolved — option A)
 
-- Validated against `password_policy` (N-10), then hashed in memory with **PBKDF2-SHA512, 210,000 iterations, 16-byte random salt**.
+- Validated against `password_policy` (N-10), then hashed in memory with **PBKDF2 (Password-Based Key Derivation Function 2)-SHA512, 210,000 iterations, 16-byte random salt**.
 - `hashed_password_seed` is the Keycloak credential representation, serialized as JSON:
 
 ```json
@@ -971,7 +971,7 @@ Signup volume is low and bursty (HLD §13). CPU is dominated by password hashing
 - Validation table tests for every field in §5.4.
 - Slug derivation, validation, reserved words and suggestions.
 - Handoff state machine: every allowed and every rejected transition (§9.1).
-- PBKDF2 output verified against a known vector and against Keycloak's format.
+- PBKDF2 (Password-Based Key Derivation Function 2) output verified against a known vector and against Keycloak's format.
 - Error mapping tables (§9.5, §17).
 - **Redaction test:** run a full SB-2 with a fake logger and assert no password, seed, token or email appears in any log line or span attribute.
 
