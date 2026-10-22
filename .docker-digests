@@ -1,0 +1,2 @@
+golang:1.23-alpine sha256:PLACEHOLDER_run_make_pin-base-images
+gcr.io/distroless/static-debian12:nonroot sha256:PLACEHOLDER_run_make_pin-base-images

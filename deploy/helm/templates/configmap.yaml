@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bff-signup.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bff-signup.labels" . | nindent 4 }}
+data:
+  {{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

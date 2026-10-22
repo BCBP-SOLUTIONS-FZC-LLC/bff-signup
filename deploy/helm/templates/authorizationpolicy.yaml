@@ -1,0 +1,54 @@
+{{- if .Values.istio.authorizationPolicy.enabled }}
+# Istio AuthorizationPolicy — controls who may reach the bff-signup pod.
+#
+# The BFF is the only internet-facing unauthenticated service. Its Istio
+# ALLOW policy restricts inbound traffic to exactly two principals:
+#   1. Envoy Gateway (envoy-gateway-system namespace) — public API on port 8080
+#   2. Prometheus (monitoring namespace) — metrics scrape on port 9090
+#
+# All other inbound connections are denied by Istio's ALLOW-policy default.
+# NetworkPolicy (networkpolicy.yaml) enforces L3/L4; this policy adds L7
+# mTLS identity enforcement (LLD §10.1, BFF-1).
+#
+# Prerequisites:
+#   - Istio installed in the cluster (istio-system namespace)
+#   - PeerAuthentication STRICT mode active in the bff namespace
+#   - Istio sidecar injection enabled on the bff-signup pod
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "bff-signup.fullname" . }}-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bff-signup.labels" . | nindent 4 }}
+  annotations:
+    app.kubernetes.io/component: "bff-ingress-policy"
+spec:
+  selector:
+    matchLabels:
+      {{- include "bff-signup.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  rules:
+    # Envoy Gateway — public API traffic on port 8080.
+    # All signup endpoints (SB-1…SB-4) are served here; no JWT requirement
+    # because this is a public unauthenticated service (LLD §5.1, BFF-4).
+    - from:
+        - source:
+            namespaces:
+              - {{ .Values.networkPolicy.ingressControllerNamespaceSelector | toJson | fromJson | dig "kubernetes.io/metadata.name" "envoy-gateway-system" | quote }}
+      to:
+        - operation:
+            ports: ["{{ .Values.service.port }}"]
+
+    # Prometheus — metrics scrape on port 9090 (monitoring namespace only).
+    # Metrics port is separate from the API port so this rule grants no API access.
+    {{- if .Values.networkPolicy.metricsIngress.enabled }}
+    - from:
+        - source:
+            namespaces:
+              - {{ .Values.networkPolicy.metricsIngress.namespaceSelector | toJson | fromJson | dig "kubernetes.io/metadata.name" "monitoring" | quote }}
+      to:
+        - operation:
+            ports: ["{{ .Values.service.metricsPort }}"]
+    {{- end }}
+{{- end }}

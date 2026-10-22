@@ -1,0 +1,45 @@
+bff-signup {{ .Chart.Version }} deployed.
+
+━━ REQUIRED ACTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{ if not .Values.existingSecret -}}
+⚠  Credentials are stored in Helm release history (base64, not encrypted).
+   Migrate to External Secrets Operator → OpenBao:
+     existingSecret: "bff-signup-prod-secrets"
+   Secrets at: secret/data/bff/bff-signup/{valkey,hmac,turnstile,captcha_site_key}
+
+{{ end -}}
+{{ if not .Values.networkPolicy.enabled -}}
+⚠  networkPolicy.enabled is false. The /metrics endpoint is unauthenticated
+   and reachable by any pod in the cluster. Enable in production:
+     networkPolicy.enabled: true
+
+{{ end -}}
+{{ if not .Values.istio.authorizationPolicy.enabled -}}
+⚠  istio.authorizationPolicy.enabled is false. Without an ALLOW policy,
+   Istio permits all inbound traffic to the bff-signup pod. Enable once
+   Istio PeerAuthentication STRICT mode is active in the bff namespace.
+
+{{ end -}}
+{{ if not .Values.ingress.enabled -}}
+ℹ  ingress.enabled is false. The signup endpoints are not exposed externally.
+   Set ingress.enabled=true and configure ingress.gateway.name to expose:
+     https://{{ .Values.publicHost }}/api/v1/signup
+
+{{ end -}}
+━━ GO-LIVE CHECKLIST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [ ] SRE: Istio mesh trust domain confirmed → bffCaller.istio.trustDomain in RP chart
+  [ ] SRE: SNS filter for tenant-orgm-q includes TenantIdentityProvisioned
+  [ ] SRE: DNS, TLS, WAF, Envoy HTTPRoute for {{ .Values.publicHost }}
+  [ ] Web/Growth lead: on-call rotation wired (primary + IAM escalation)
+  See: docs/lld/signup-bff-action-tracker.md
+
+━━ VERIFY DEPLOYMENT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  kubectl rollout status deployment/{{ include "bff-signup.fullname" . }} -n {{ .Release.Namespace }}
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name=bff-signup
+
+  Readiness:  https://{{ .Values.publicHost }}/readyz
+  Session:    https://{{ .Values.publicHost }}/api/v1/signup/session
+  Metrics:    (cluster-internal only) http://<pod-ip>:{{ .Values.service.metricsPort }}/metrics

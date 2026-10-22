@@ -1,0 +1,21 @@
+replicaCount: 2
+
+env:
+  APP_ENV: "prod"
+  PUBLIC_HOST: "signup.bcbpsolutions.com"
+  REALM_PROVISIONER_BASE_URL: "http://iam-realm-provisioner.iam.svc.cluster.local:8080"
+  ORG_MEMBERSHIP_BASE_URL: "http://iam-org-membership.iam.svc.cluster.local:8080"
+  CAPTCHA_EXPECTED_HOSTNAME: "signup.bcbpsolutions.com"
+
+existingSecret: "bff-signup-prod-secrets"
+
+networkPolicy:
+  enabled: true
+
+serviceEntry:
+  enabled: true   # REGISTRY_ONLY — Turnstile must be explicitly allowed
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5

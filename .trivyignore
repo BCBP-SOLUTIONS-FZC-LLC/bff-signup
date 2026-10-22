@@ -1,0 +1,8 @@
+# DLA-4792-1: tzdata timezone database update (2026b → 2026c).
+# Severity: UNKNOWN (Debian LTS advisory, not a CVE).
+# This is a timezone data update, not a security vulnerability.
+# Suppressed here because distroless images have no package manager — tzdata
+# cannot be upgraded in the final stage without rebuilding the base image.
+# Permanent fix: update gcr.io/distroless/static-debian12:nonroot SHA digest
+# to a version that ships tzdata >= 2026c-0+deb12u1 (run `make pin-base-images`).
+DLA-4792-1

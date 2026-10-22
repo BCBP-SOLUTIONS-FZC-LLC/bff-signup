@@ -1,0 +1,97 @@
+package realmprovisioner
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
+)
+
+const (
+	rp1Path         = "/api/v1/internal/tenants/provision-trial"
+	systemPrincipal = "00000000-0000-0000-0000-0000000000a1"
+)
+
+// Client implements port.RealmProvisioner (RP-1, LLD §5.6, §18.1).
+type Client struct {
+	httpClient *http.Client
+	baseURL    string
+}
+
+var _ port.RealmProvisioner = (*Client)(nil)
+
+func New(baseURL string, timeout time.Duration) *Client {
+	return &Client{
+		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: timeout},
+	}
+}
+
+// rp1Error is the RFC 9457 error shape RP returns (LLD §17.2).
+type rp1Error struct {
+	Status    int    `json:"status"`
+	ErrorCode string `json:"errorCode"`
+	Detail    string `json:"detail"`
+}
+
+func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequest, idempotencyKey string) (*port.ProvisionTrialResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, domain.NewError(domain.ErrInternal, "failed to marshal RP-1 request")
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+rp1Path, bytes.NewReader(body))
+	if err != nil {
+		return nil, domain.NewError(domain.ErrInternal, "failed to build RP-1 request")
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-tenant-id", req.TenantID)
+	httpReq.Header.Set("x-user-id", systemPrincipal)
+	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("RP-1 unreachable: %v", err))
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		var out port.ProvisionTrialResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, domain.NewError(domain.ErrInternal, "failed to decode RP-1 response")
+		}
+		return &out, nil
+
+	case http.StatusConflict:
+		// Branch on errorCode (RFC 9457) — never on detail (LLD §17.2)
+		var rpe rp1Error
+		_ = json.NewDecoder(resp.Body).Decode(&rpe)
+		switch rpe.ErrorCode {
+		case "EMAIL_ALREADY_REGISTERED":
+			return nil, domain.NewError(domain.ErrEmailUnavailable, "email already registered in Keycloak")
+		case "OPERATION_IN_PROGRESS":
+			// Caller should retry with the same idempotency key
+			return nil, domain.NewError(domain.ErrInvalidState, "RP-1 operation in progress, retry")
+		}
+		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("unexpected RP-1 409: %s", rpe.ErrorCode))
+
+	case http.StatusBadRequest:
+		var rpe rp1Error
+		_ = json.NewDecoder(resp.Body).Decode(&rpe)
+		// INVALID_REQUEST means a BFF bug (bad plan value etc.) — page, do not retry
+		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("RP-1 rejected request: %s", rpe.ErrorCode))
+
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "RP-1 / Keycloak temporarily unavailable")
+
+	default:
+		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("unexpected RP-1 status %d", resp.StatusCode))
+	}
+}
