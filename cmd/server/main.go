@@ -64,6 +64,7 @@ func run() error {
 		handoffStore, rateLimiter, captchaVerifier, passwordHasher,
 		orchestrator, idgen, clk,
 		[]byte(cfg.HMACKey), cfg.ReservedSlugs, cfg.PasswordPolicy(),
+		cfg.CurrentTermsVersion,
 	)
 	statusSvc := service.NewStatusService(handoffStore, rateLimiter, orchestrator, clk, cfg.ReservedSlugs)
 
@@ -74,6 +75,8 @@ func run() error {
 		cfg.CaptchaSiteKey,
 		cfg.PasswordPolicy(),
 		cfg.SlugRules(),
+		cfg.RequestDeadline(),
+		cfg.CurrentTermsVersion,
 	)
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
 		Handlers:       handlers,

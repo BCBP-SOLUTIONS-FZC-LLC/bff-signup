@@ -30,6 +30,7 @@ type SignupInput struct {
 	CaptchaToken  string
 	DefaultLocale string
 	ClientIP      string
+	UserAgent     string // browser User-Agent, max 512 bytes (A-4)
 	Session       *port.Session
 }
 
@@ -43,16 +44,17 @@ type SignupResult struct {
 
 // SignupService handles SB-2: POST /api/v1/signup/trial (LLD §5.4).
 type SignupService struct {
-	handoffs     port.HandoffStore
-	limiter      port.RateLimiter
-	captcha      port.CaptchaVerifier
-	hasher       port.PasswordHasher
-	orchestrator *HandoffOrchestrator
-	idgen        port.IDGenerator
-	clock        port.Clock
-	hmacKey      []byte
-	reserved     map[string]bool
-	policy       domain.PasswordPolicy
+	handoffs            port.HandoffStore
+	limiter             port.RateLimiter
+	captcha             port.CaptchaVerifier
+	hasher              port.PasswordHasher
+	orchestrator        *HandoffOrchestrator
+	idgen               port.IDGenerator
+	clock               port.Clock
+	hmacKey             []byte
+	reserved            map[string]bool
+	policy              domain.PasswordPolicy
+	currentTermsVersion string
 }
 
 func NewSignupService(
@@ -66,11 +68,13 @@ func NewSignupService(
 	hmacKey []byte,
 	reserved map[string]bool,
 	policy domain.PasswordPolicy,
+	currentTermsVersion string,
 ) *SignupService {
 	return &SignupService{
 		handoffs: handoffs, limiter: limiter, captcha: captcha, hasher: hasher,
 		orchestrator: orchestrator, idgen: idgen, clock: clock,
 		hmacKey: hmacKey, reserved: reserved, policy: policy,
+		currentTermsVersion: currentTermsVersion,
 	}
 }
 
@@ -108,6 +112,8 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	if err := s.validate(in); err != nil {
 		return nil, err
 	}
+	// Record server time at the moment BFF validated accept_terms: true (A-4, LLD §10.6).
+	termsAcceptedAt := s.clock.Now()
 
 	// Derive slug if not supplied
 	slug := in.Slug
@@ -116,7 +122,10 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	}
 
 	// ── 4. Resubmit / resume check ────────────────────────────────────────────
-	existing, _ := s.handoffs.Get(ctx, in.Session.SignupID)
+	existing, err := s.handoffs.Get(ctx, in.Session.SignupID)
+	if err != nil {
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+	}
 	if existing != nil {
 		result, handled, err := s.handleResubmit(ctx, existing, in, slug, emailHMAC)
 		if handled {
@@ -174,6 +183,12 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		AdminEmail:         domain.NormaliseEmail(in.AdminEmail),
 		AdminName:          strings.TrimSpace(in.AdminName),
 		HashedPasswordSeed: seedJSON,
+		TermsAcceptance: port.TermsAcceptance{
+			Version:    in.TermsVersion,
+			AcceptedAt: termsAcceptedAt.UTC().Format(time.RFC3339),
+			IPAddress:  in.ClientIP,
+			UserAgent:  in.UserAgent,
+		},
 	})
 	if err != nil {
 		// Slug conflict: return the result (with suggestions) alongside the error
@@ -286,6 +301,10 @@ func (s *SignupService) validate(in SignupInput) error {
 	}
 	if in.TermsVersion == "" {
 		return domain.NewError(domain.ErrValidationFailed, "terms_version is required")
+	}
+	if s.currentTermsVersion != "" && in.TermsVersion != s.currentTermsVersion {
+		return domain.NewError(domain.ErrValidationFailed, "terms_version is not the current published version").
+			WithDetails(map[string]any{"current_version": s.currentTermsVersion})
 	}
 	return nil
 }

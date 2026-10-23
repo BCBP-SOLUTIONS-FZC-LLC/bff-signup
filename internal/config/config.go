@@ -164,6 +164,7 @@ func (c *Config) RPTimeout() time.Duration          { return ms(c.RPTimeoutMs) }
 func (c *Config) I1Timeout() time.Duration          { return ms(c.I1TimeoutMs) }
 func (c *Config) EligibilityTimeout() time.Duration { return ms(c.EligibilityTimeoutMs) }
 func (c *Config) TurnstileTimeout() time.Duration   { return ms(c.TurnstileTimeoutMs) }
+func (c *Config) RequestDeadline() time.Duration    { return ms(c.RequestDeadlineMs) }
 
 func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 

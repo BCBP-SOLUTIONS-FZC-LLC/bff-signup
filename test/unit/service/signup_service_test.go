@@ -30,6 +30,7 @@ func newSignupService(
 		[]byte("test-hmac-key-32-bytes-minimum!!"),
 		nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
+		"2026-09",
 	)
 }
 

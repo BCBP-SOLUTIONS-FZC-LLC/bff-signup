@@ -22,7 +22,8 @@ type OrchestratorInput struct {
 	Handoff            *domain.Handoff
 	AdminEmail         string
 	AdminName          string
-	HashedPasswordSeed string // JSON-serialised; zeroed after RP-1 call
+	HashedPasswordSeed string               // JSON-serialised; zeroed after RP-1 call
+	TermsAcceptance    port.TermsAcceptance // forwarded to RP-1 for Audit Log record (A-4)
 }
 
 // HandoffOrchestrator runs the provisioning sequence (LLD §8.1, §9.1).
@@ -65,6 +66,20 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 
 	// ── Step 1: RP-1 provision-trial ─────────────────────────────────────────
 	if h.State == domain.StateAllocated {
+		// PUB-1 slug pre-check — server-side before RP-1 to prevent orphaned Keycloak
+		// users when the slug is already taken (A-3, LLD §7). Fail-open: 5xx/network
+		// errors return nil so the signup proceeds and relies on I-1's unique constraint.
+		if err := o.om.CheckSlugFree(ctx, h.Slug); err != nil {
+			suggestions := domain.SuggestSlugs(h.Slug, h.CompanyName, nil)
+			h.State = domain.StateSlugConflict
+			h.UpdatedAt = o.clock.Now()
+			_ = o.handoffs.Update(ctx, h)
+			return &OrchestratorResult{
+				State:           domain.StateSlugConflict,
+				SlugSuggestions: suggestions,
+			}, err
+		}
+
 		idempotencyKey := fmt.Sprintf("signup:%s:rp1", h.TenantID)
 		rpReq := port.ProvisionTrialRequest{
 			TenantID:           h.TenantID,
@@ -74,6 +89,7 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 			AdminName:          in.AdminName,
 			HashedPasswordSeed: in.HashedPasswordSeed,
 			Plan:               string(h.Plan),
+			TermsAcceptance:    in.TermsAcceptance,
 		}
 		rpResp, err := o.rp.ProvisionTrial(ctx, rpReq, idempotencyKey)
 		if err != nil {
@@ -128,6 +144,12 @@ func (o *HandoffOrchestrator) ResumeI1(ctx context.Context, h *domain.Handoff) (
 func (o *HandoffOrchestrator) ChangeSlug(ctx context.Context, h *domain.Handoff, newSlug string) (*OrchestratorResult, error) {
 	if !h.CanChangeSlug() {
 		return nil, domain.NewError(domain.ErrInvalidState, "handoff is not in slug_conflict state")
+	}
+	// PUB-1 pre-check path: RP-1 never ran, so no Keycloak identity exists.
+	// SB-4 can only retry I-1 — it cannot re-run RP-1 (password seed is gone).
+	// The frontend must resubmit SB-2 with the new slug.
+	if h.KeycloakUserID == "" {
+		return nil, domain.NewError(domain.ErrInvalidState, "identity not yet created; resubmit the signup form with the new slug")
 	}
 	if h.SlugAttempts >= maxSlugAttempts {
 		return nil, domain.NewError(domain.ErrInvalidState, "maximum slug attempts reached")

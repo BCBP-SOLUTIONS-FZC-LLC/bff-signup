@@ -34,11 +34,18 @@ func (s *HandoffStore) Create(ctx context.Context, h *domain.Handoff) error {
 	if err != nil {
 		return err
 	}
-	return s.rdb.Set(ctx, handoffKey(h.SignupID), data, handoffTTL).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return s.rdb.Set(opCtx, handoffKey(h.SignupID), data, handoffTTL).Err()
+	})
 }
 
 func (s *HandoffStore) Get(ctx context.Context, signupID string) (*domain.Handoff, error) {
-	data, err := s.rdb.Get(ctx, handoffKey(signupID)).Bytes()
+	var raw []byte
+	err := runOp(ctx, func(opCtx context.Context) error {
+		var e error
+		raw, e = s.rdb.Get(opCtx, handoffKey(signupID)).Bytes()
+		return e
+	})
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
@@ -46,7 +53,7 @@ func (s *HandoffStore) Get(ctx context.Context, signupID string) (*domain.Handof
 		return nil, err
 	}
 	var h domain.Handoff
-	if err := json.Unmarshal(data, &h); err != nil {
+	if err := json.Unmarshal(raw, &h); err != nil {
 		return nil, err
 	}
 	return &h, nil
@@ -61,11 +68,15 @@ func (s *HandoffStore) Update(ctx context.Context, h *domain.Handoff) error {
 	if err != nil {
 		return err
 	}
-	return s.rdb.Set(ctx, handoffKey(h.SignupID), data, ttl).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return s.rdb.Set(opCtx, handoffKey(h.SignupID), data, ttl).Err()
+	})
 }
 
 func (s *HandoffStore) Delete(ctx context.Context, signupID string) error {
-	return s.rdb.Del(ctx, handoffKey(signupID)).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return s.rdb.Del(opCtx, handoffKey(signupID)).Err()
+	})
 }
 
 var releaseLockScript = redis.NewScript(`
@@ -82,7 +93,12 @@ func (s *HandoffStore) AcquireLock(ctx context.Context, signupID string) (string
 		return "", false, err
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
-	ok, err := s.rdb.SetNX(ctx, lockKey(signupID), token, lockTTL).Result()
+	var ok bool
+	err := runOp(ctx, func(opCtx context.Context) error {
+		var e error
+		ok, e = s.rdb.SetNX(opCtx, lockKey(signupID), token, lockTTL).Result()
+		return e
+	})
 	if err != nil {
 		return "", false, err
 	}
@@ -90,5 +106,7 @@ func (s *HandoffStore) AcquireLock(ctx context.Context, signupID string) (string
 }
 
 func (s *HandoffStore) ReleaseLock(ctx context.Context, signupID, token string) error {
-	return releaseLockScript.Run(ctx, s.rdb, []string{lockKey(signupID)}, token).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return releaseLockScript.Run(opCtx, s.rdb, []string{lockKey(signupID)}, token).Err()
+	})
 }

@@ -27,11 +27,18 @@ func (s *SessionStore) Create(ctx context.Context, sess *port.Session) error {
 	if err != nil {
 		return err
 	}
-	return s.rdb.Set(ctx, sessKey(sess.SID), data, sessionTTL).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return s.rdb.Set(opCtx, sessKey(sess.SID), data, sessionTTL).Err()
+	})
 }
 
 func (s *SessionStore) Get(ctx context.Context, sid string) (*port.Session, error) {
-	data, err := s.rdb.Get(ctx, sessKey(sid)).Bytes()
+	var raw []byte
+	err := runOp(ctx, func(opCtx context.Context) error {
+		var e error
+		raw, e = s.rdb.Get(opCtx, sessKey(sid)).Bytes()
+		return e
+	})
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
@@ -39,16 +46,20 @@ func (s *SessionStore) Get(ctx context.Context, sid string) (*port.Session, erro
 		return nil, err
 	}
 	var sess port.Session
-	if err := json.Unmarshal(data, &sess); err != nil {
+	if err := json.Unmarshal(raw, &sess); err != nil {
 		return nil, err
 	}
 	return &sess, nil
 }
 
 func (s *SessionStore) Refresh(ctx context.Context, sid string) error {
-	return s.rdb.Expire(ctx, sessKey(sid), sessionTTL).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return s.rdb.Expire(opCtx, sessKey(sid), sessionTTL).Err()
+	})
 }
 
 func (s *SessionStore) Delete(ctx context.Context, sid string) error {
-	return s.rdb.Del(ctx, sessKey(sid)).Err()
+	return runOp(ctx, func(opCtx context.Context) error {
+		return s.rdb.Del(opCtx, sessKey(sid)).Err()
+	})
 }

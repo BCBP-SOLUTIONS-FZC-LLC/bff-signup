@@ -5,12 +5,13 @@ import "github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 // ── SB-1 response ─────────────────────────────────────────────────────────────
 
 type SessionResponse struct {
-	SignupID       string                `json:"signup_id"`
-	CSRFToken      string                `json:"csrf_token"`
-	Captcha        CaptchaInfo           `json:"captcha"`
-	Plans          []domain.PlanInfo     `json:"plans"`
-	PasswordPolicy domain.PasswordPolicy `json:"password_policy"`
-	SlugRules      domain.SlugRules      `json:"slug_rules"`
+	SignupID            string                `json:"signup_id"`
+	CSRFToken           string                `json:"csrf_token"`
+	Captcha             CaptchaInfo           `json:"captcha"`
+	Plans               []domain.PlanInfo     `json:"plans"`
+	PasswordPolicy      domain.PasswordPolicy `json:"password_policy"`
+	SlugRules           domain.SlugRules      `json:"slug_rules"`
+	CurrentTermsVersion string                `json:"current_terms_version"` // browser must echo this back in SB-2
 }
 
 type CaptchaInfo struct {
@@ -61,6 +62,7 @@ type SlugChangeRequest struct {
 type SlugTakenResponse struct {
 	Error     string `json:"error"`
 	Status    int    `json:"status"`
+	Message   string `json:"message,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
 	Details   struct {
 		SignupID    string   `json:"signup_id"`

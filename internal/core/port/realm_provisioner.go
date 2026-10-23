@@ -2,15 +2,25 @@ package port
 
 import "context"
 
+// TermsAcceptance is sent on every RP-1 call so Realm Provisioner can write a durable
+// legal.terms.accepted audit record (A-4, LLD §5.6, §10.6).
+type TermsAcceptance struct {
+	Version    string `json:"version"`     // e.g. "2026-09"
+	AcceptedAt string `json:"accepted_at"` // RFC 3339 UTC — server time BFF validated accept_terms
+	IPAddress  string `json:"ip_address"`  // end-user IP from trusted proxy headers
+	UserAgent  string `json:"user_agent"`  // browser User-Agent, max 512 bytes
+}
+
 // ProvisionTrialRequest is the RP-1 request body (LLD §5.6).
 type ProvisionTrialRequest struct {
-	TenantID           string `json:"tenant_id"`
-	TenantName         string `json:"tenant_name"`
-	TenantSlug         string `json:"tenant_slug"`
-	AdminEmail         string `json:"admin_email"`
-	AdminName          string `json:"admin_name"`
-	HashedPasswordSeed string `json:"hashed_password_seed"` // JSON-serialised HashedPasswordSeed
-	Plan               string `json:"plan"`                 // starter | pro | enterprise
+	TenantID           string          `json:"tenant_id"`
+	TenantName         string          `json:"tenant_name"`
+	TenantSlug         string          `json:"tenant_slug"`
+	AdminEmail         string          `json:"admin_email"`
+	AdminName          string          `json:"admin_name"`
+	HashedPasswordSeed string          `json:"hashed_password_seed"` // JSON-serialised HashedPasswordSeed
+	Plan               string          `json:"plan"`                 // starter | pro | enterprise
+	TermsAcceptance    TermsAcceptance `json:"terms_acceptance"`
 }
 
 // ProvisionTrialResponse is the RP-1 201 response body.

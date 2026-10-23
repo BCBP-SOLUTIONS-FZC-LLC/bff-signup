@@ -43,11 +43,19 @@ func (r *RateLimiter) IncrPoll(ctx context.Context, sid string) (int64, time.Tim
 }
 
 func (r *RateLimiter) incr(ctx context.Context, key string, ttl time.Duration) (int64, time.Time, error) {
-	pipe := r.rdb.Pipeline()
-	incrCmd := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, ttl)
-	if _, err := pipe.Exec(ctx); err != nil {
+	var count int64
+	err := runOp(ctx, func(opCtx context.Context) error {
+		pipe := r.rdb.Pipeline()
+		incrCmd := pipe.Incr(opCtx, key)
+		pipe.Expire(opCtx, key, ttl)
+		if _, e := pipe.Exec(opCtx); e != nil {
+			return e
+		}
+		count = incrCmd.Val()
+		return nil
+	})
+	if err != nil {
 		return 0, time.Time{}, err
 	}
-	return incrCmd.Val(), time.Now().Add(ttl), nil
+	return count, time.Now().Add(ttl), nil
 }

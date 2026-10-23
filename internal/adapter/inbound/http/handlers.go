@@ -1,7 +1,9 @@
 package http
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -13,13 +15,15 @@ import (
 
 // Handlers holds all handler dependencies.
 type Handlers struct {
-	session   *service.SessionService
-	signup    *service.SignupService
-	status    *service.StatusService
-	catalog   port.Catalog
-	siteKey   string
-	policy    domain.PasswordPolicy
-	slugRules domain.SlugRules
+	session             *service.SessionService
+	signup              *service.SignupService
+	status              *service.StatusService
+	catalog             port.Catalog
+	siteKey             string
+	policy              domain.PasswordPolicy
+	slugRules           domain.SlugRules
+	requestDeadline     time.Duration
+	currentTermsVersion string
 }
 
 func NewHandlers(
@@ -30,8 +34,10 @@ func NewHandlers(
 	siteKey string,
 	policy domain.PasswordPolicy,
 	slugRules domain.SlugRules,
+	requestDeadline time.Duration,
+	currentTermsVersion string,
 ) *Handlers {
-	return &Handlers{session, signup, status, catalog, siteKey, policy, slugRules}
+	return &Handlers{session, signup, status, catalog, siteKey, policy, slugRules, requestDeadline, currentTermsVersion}
 }
 
 // ── SB-1: GET /api/v1/signup/session ─────────────────────────────────────────
@@ -72,9 +78,10 @@ func (h *Handlers) Session(c *gin.Context) {
 			Provider: "turnstile",
 			SiteKey:  h.siteKey,
 		},
-		Plans:          plans,
-		PasswordPolicy: h.policy,
-		SlugRules:      h.slugRules,
+		Plans:               plans,
+		PasswordPolicy:      h.policy,
+		SlugRules:           h.slugRules,
+		CurrentTermsVersion: h.currentTermsVersion,
 	})
 }
 
@@ -120,7 +127,12 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 
 	locale := acceptLocale(c)
 
-	result, err := h.signup.Submit(c.Request.Context(), service.SignupInput{
+	// Apply the SB-2 request deadline (LLD §9.3: 2500 ms) so the orchestrator's
+	// ctx.Err() checks and retry guards see a real deadline.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.requestDeadline)
+	defer cancel()
+
+	result, err := h.signup.Submit(ctx, service.SignupInput{
 		CompanyName:   req.CompanyName,
 		Slug:          req.Slug,
 		AdminName:     req.AdminName,
@@ -132,14 +144,16 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 		CaptchaToken:  req.CaptchaToken,
 		DefaultLocale: locale,
 		ClientIP:      middleware.ClientIPFromContext(c),
+		UserAgent:     truncateUserAgent(c.GetHeader("User-Agent")),
 		Session:       sess,
 	})
 	if err != nil {
 		if de, ok := err.(*domain.DomainError); ok && de.Cause == domain.ErrSlugTaken {
-			// 409 slug_taken with suggestions
+			// 409 slug_taken with suggestions (A-3: note about offboarded tenants, LLD §17.1)
 			var resp SlugTakenResponse
 			resp.Error = "slug_taken"
 			resp.Status = http.StatusConflict
+			resp.Message = "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address."
 			resp.RequestID = c.GetString("X-Request-Id")
 			resp.Details.SignupID = sess.SignupID
 			if result != nil {
@@ -264,6 +278,7 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 			var resp SlugTakenResponse
 			resp.Error = "slug_taken"
 			resp.Status = http.StatusConflict
+			resp.Message = "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address."
 			resp.RequestID = c.GetString("X-Request-Id")
 			resp.Details.SignupID = pathID
 			c.JSON(http.StatusConflict, resp)
@@ -327,6 +342,28 @@ func stateToStatusString(state domain.HandoffState) string {
 	default:
 		return "provisioning"
 	}
+}
+
+// truncateUserAgent trims the User-Agent to 512 bytes of valid UTF-8 as required
+// by the RP-1 terms_acceptance contract (A-4, LLD §10.6).
+func truncateUserAgent(ua string) string {
+	const maxBytes = 512
+	if len(ua) <= maxBytes {
+		return ua
+	}
+	// Trim at a valid UTF-8 rune boundary so we never send a partial rune.
+	b := []byte(ua[:maxBytes])
+	for len(b) > 0 {
+		r := rune(b[len(b)-1])
+		if r < 128 {
+			break // ASCII — clean boundary
+		}
+		b = b[:len(b)-1] // back up past any continuation bytes
+		if r >= 0xC0 {
+			break // found the start byte of a multi-byte rune
+		}
+	}
+	return string(b)
 }
 
 // acceptLocale derives default_locale from Accept-Language header (allow-listed).

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
@@ -15,6 +16,7 @@ import (
 const (
 	i1Path          = "/api/v1/internal/tenants"
 	eligibilityPath = "/api/v1/internal/trial-eligibility"
+	pub1Path        = "/api/v1/public/tenants/resolve"
 	systemPrincipal = "00000000-0000-0000-0000-0000000000a1"
 )
 
@@ -43,6 +45,50 @@ type omError struct {
 // eligibilityRequest is the POST /internal/trial-eligibility body (CR-4).
 type eligibilityRequest struct {
 	EmailHash string `json:"email_hash"`
+}
+
+// pub1Response is the PUB-1 GET /api/v1/public/tenants/resolve response shape.
+type pub1Response struct {
+	Found bool `json:"found"`
+}
+
+// CheckSlugFree calls PUB-1 (GET /api/v1/public/tenants/resolve?identifier=<slug>).
+// Fail-open: any non-200 response or network error returns nil so the signup can proceed.
+// Only confirmed found:true returns ErrSlugTaken (A-3, LLD §7).
+func (c *Client) CheckSlugFree(ctx context.Context, slug string) error {
+	u, err := url.Parse(c.baseURL + pub1Path)
+	if err != nil {
+		return nil // can't build URL, proceed
+	}
+	q := u.Query()
+	q.Set("identifier", slug)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil // proceed
+	}
+	req.Header.Set("x-user-id", systemPrincipal)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil // network error = couldn't check, proceed
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return nil // 4xx/5xx = couldn't confirm, proceed
+	}
+
+	var out pub1Response
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil // decode error = proceed
+	}
+
+	if out.Found {
+		return domain.NewError(domain.ErrSlugTaken, "slug is already in use by an existing tenant")
+	}
+	return nil
 }
 
 // CheckEligibility calls POST /internal/trial-eligibility (CR-4, LLD §5.6 step E).

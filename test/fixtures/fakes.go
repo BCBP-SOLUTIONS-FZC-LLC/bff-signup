@@ -199,9 +199,10 @@ func (f *FakeRealmProvisioner) ProvisionTrial(_ context.Context, req port.Provis
 
 // ── FakeOrgMembership ─────────────────────────────────────────────────────────
 
-// FakeOrgMembership controls eligibility and I-1 outcomes independently.
+// FakeOrgMembership controls eligibility, PUB-1 slug check, and I-1 outcomes independently.
 type FakeOrgMembership struct {
 	EligibleErr error // nil = eligible; set to ErrTrialNotEligible to block
+	SlugFreeErr error // nil = slug free; set to ErrSlugTaken to simulate taken slug
 	I1Resp      *port.ProvisionTenantResponse
 	I1Err       error
 	mu          sync.Mutex
@@ -216,6 +217,10 @@ func NewFakeOrgMembership(tenantID string) *FakeOrgMembership {
 
 func (f *FakeOrgMembership) CheckEligibility(_ context.Context, _ string) error {
 	return f.EligibleErr
+}
+
+func (f *FakeOrgMembership) CheckSlugFree(_ context.Context, _ string) error {
+	return f.SlugFreeErr
 }
 
 func (f *FakeOrgMembership) ProvisionTenant(_ context.Context, req port.ProvisionTenantRequest) (*port.ProvisionTenantResponse, error) {
