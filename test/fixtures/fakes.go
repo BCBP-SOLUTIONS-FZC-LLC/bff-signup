@@ -171,11 +171,13 @@ func (f *FakeCaptchaVerifier) Verify(_ context.Context, _, _ string) error {
 
 // FakeRealmProvisioner returns a fixed response or a scripted error.
 type FakeRealmProvisioner struct {
-	Resp *port.ProvisionTrialResponse
-	Err  error
-	// Calls records every request made — for assertion in tests.
-	mu    sync.Mutex
-	Calls []port.ProvisionTrialRequest
+	Resp        *port.ProvisionTrialResponse
+	Err         error
+	DirectResp  *port.ProvisionDirectResponse
+	DirectErr   error
+	mu          sync.Mutex
+	Calls       []port.ProvisionTrialRequest
+	DirectCalls []port.ProvisionDirectRequest
 }
 
 func NewFakeRealmProvisioner(keycloakUserID string) *FakeRealmProvisioner {
@@ -187,6 +189,12 @@ func NewFakeRealmProvisioner(keycloakUserID string) *FakeRealmProvisioner {
 			KeycloakUserID:        keycloakUserID,
 			EmailVerificationSent: true,
 		},
+		DirectResp: &port.ProvisionDirectResponse{
+			TenantID:              "00000000-0000-0000-0000-000000000001",
+			Realm:                 keycloakUserID + "-realm",
+			KeycloakUserID:        keycloakUserID,
+			EmailVerificationSent: true,
+		},
 	}
 }
 
@@ -195,6 +203,13 @@ func (f *FakeRealmProvisioner) ProvisionTrial(_ context.Context, req port.Provis
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, req)
 	return f.Resp, f.Err
+}
+
+func (f *FakeRealmProvisioner) ProvisionDirect(_ context.Context, req port.ProvisionDirectRequest, _ string) (*port.ProvisionDirectResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.DirectCalls = append(f.DirectCalls, req)
+	return f.DirectResp, f.DirectErr
 }
 
 // ── FakeOrgMembership ─────────────────────────────────────────────────────────
@@ -228,6 +243,29 @@ func (f *FakeOrgMembership) ProvisionTenant(_ context.Context, req port.Provisio
 	defer f.mu.Unlock()
 	f.I1Calls = append(f.I1Calls, req)
 	return f.I1Resp, f.I1Err
+}
+
+// ── FakeBillingClient ─────────────────────────────────────────────────────────
+
+// FakeBillingClient returns a fixed charge response or a scripted error.
+type FakeBillingClient struct {
+	Resp  *port.ChargeResponse
+	Err   error
+	mu    sync.Mutex
+	Calls []port.ChargeRequest
+}
+
+func NewFakeBillingClient(subscriptionID string) *FakeBillingClient {
+	return &FakeBillingClient{
+		Resp: &port.ChargeResponse{BillingSubscriptionID: subscriptionID},
+	}
+}
+
+func (f *FakeBillingClient) AuthorizeAndCharge(_ context.Context, req port.ChargeRequest) (*port.ChargeResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, req)
+	return f.Resp, f.Err
 }
 
 // ── FakeClock ─────────────────────────────────────────────────────────────────

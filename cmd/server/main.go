@@ -53,6 +53,7 @@ func run() error {
 	captchaVerifier := buildTurnstile(cfg)
 	passwordHasher := buildPasswordHasher(cfg)
 	catalogClient := buildCatalog(cfg)
+	billingClient := buildBilling(cfg) // Phase 1.5: stub unless PAID_SIGNUP_ENABLED=true
 
 	// ── 5. Services ───────────────────────────────────────────────────────────
 	clk := port.RealClock{}
@@ -66,11 +67,17 @@ func run() error {
 		[]byte(cfg.HMACKey), cfg.ReservedSlugs, cfg.PasswordPolicy(),
 		cfg.CurrentTermsVersion,
 	)
+	paidSignupSvc := service.NewPaidSignupService(
+		handoffStore, rateLimiter, captchaVerifier, passwordHasher,
+		billingClient, rp, om, idgen, clk,
+		[]byte(cfg.HMACKey), cfg.ReservedSlugs, cfg.PasswordPolicy(),
+		cfg.CurrentTermsVersion,
+	)
 	statusSvc := service.NewStatusService(handoffStore, rateLimiter, orchestrator, clk, cfg.ReservedSlugs)
 
 	// ── 6. HTTP handlers and router ───────────────────────────────────────────
 	handlers := httpadapter.NewHandlers(
-		sessionSvc, signupSvc, statusSvc,
+		sessionSvc, signupSvc, paidSignupSvc, statusSvc,
 		catalogClient,
 		cfg.CaptchaSiteKey,
 		cfg.PasswordPolicy(),
@@ -79,11 +86,12 @@ func run() error {
 		cfg.CurrentTermsVersion,
 	)
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
-		Handlers:       handlers,
-		SessionService: sessionSvc,
-		Valkey:         handoffStore,
-		PublicHost:     cfg.PublicHost,
-		DocsEnabled:    cfg.AppEnv != "prod",
+		Handlers:          handlers,
+		SessionService:    sessionSvc,
+		Valkey:            handoffStore,
+		PublicHost:        cfg.PublicHost,
+		DocsEnabled:       cfg.AppEnv != "prod",
+		PaidSignupEnabled: cfg.PaidSignupEnabled,
 	})
 
 	// ── 7. HTTP server ────────────────────────────────────────────────────────

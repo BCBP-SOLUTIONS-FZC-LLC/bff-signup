@@ -152,41 +152,45 @@ flowchart LR
 ```
 bff-signup/
 ├── cmd/server/main.go                 # wiring, graceful shutdown
+│             wiring.go               # client factories incl. buildBilling() stub
 ├── internal/
 │   ├── config/                        # env + file config, validation, fail-fast
+│   │                                  # PAID_SIGNUP_ENABLED, BILLING_BASE_URL added (§19)
 │   ├── core/
 │   │   ├── domain/                    # pure types, no I/O
 │   │   │   ├── signup.go              # SignupRequest, validation rules
 │   │   │   ├── slug.go                # derive, normalize, validate, suggest (N-1)
 │   │   │   ├── handoff.go             # Handoff record + state machine (§9.1)
+│   │   │   │                          # Phase 1.5: payment_pending, payment_confirmed,
+│   │   │   │                          # SignupType (trial|paid), BillingSubscriptionID
 │   │   │   ├── plan.go
 │   │   │   └── errors.go              # domain error codes (§17)
 │   │   ├── port/
-│   │   │   ├── realm_provisioner.go   # ProvisionTrial(ctx, req, key) (RP-1)
-│   │   │   ├── org_membership.go      # ProvisionTenant(ctx, req, key) (I-1)
-│   │   │   ├── trial_eligibility.go   # CheckEligibility(ctx, emailHash) (CR-4)
+│   │   │   ├── realm_provisioner.go   # ProvisionTrial (RP-1) + ProvisionDirect (RP-2, §19)
+│   │   │   ├── org_membership.go      # ProvisionTenant (I-1) + CheckEligibility (CR-4)
 │   │   │   ├── captcha.go             # CaptchaVerifier.Verify(ctx, token, ip)
 │   │   │   ├── catalog.go             # Plans(ctx)
 │   │   │   ├── handoff_store.go       # Get/Create/Update/Lock (Valkey)
 │   │   │   ├── session_store.go
 │   │   │   ├── rate_limiter.go
 │   │   │   ├── password_hasher.go     # Hash(password) → seed (C-4)
-│   │   │   ├── billing.go             # STUB — Phase 1.5 (§19)
+│   │   │   ├── billing.go             # BillingClient port + BillingStub (§19)
 │   │   │   └── clock.go, idgen.go
 │   │   └── service/
 │   │       ├── session_service.go     # SB-1
-│   │       ├── signup_service.go      # SB-2 entry, validation, abuse checks
-│   │       ├── handoff_orchestrator.go# eligibility → RP-1 → I-1, resume
+│   │       ├── signup_service.go      # SB-2 trial entry, validation, abuse checks
+│   │       ├── paid_signup_service.go # SB-5 direct paid signup (Phase 1.5, §19)
+│   │       ├── handoff_orchestrator.go# eligibility → RP-1 → I-1, resume, slug change
 │   │       └── status_service.go      # SB-3, SB-4
 │   └── adapter/
 │       ├── inbound/http/
-│       │   ├── router.go
-│       │   ├── handlers.go
-│       │   ├── dto.go
+│       │   ├── router.go              # SB-5 POST /paid wired when PAID_SIGNUP_ENABLED=true
+│       │   ├── handlers.go            # Session · SubmitTrial · SubmitPaid · GetStatus · ChangeSlug
+│       │   ├── dto.go                 # PaidSignupRequest / PaidSignupResponse added
 │       │   └── middleware/            # session, csrf, clientip, bodylimit, nostore
 │       └── outbound/
-│           ├── realmprovisioner/      # HTTP client (Istio sidecar does mTLS)
-│           ├── orgmembership/         # HTTP client (I-1 + eligibility)
+│           ├── realmprovisioner/      # RP-1 + RP-2 (ProvisionDirect, §19)
+│           ├── orgmembership/         # I-1 + eligibility
 │           ├── catalog/
 │           ├── turnstile/
 │           ├── valkey/
@@ -277,6 +281,7 @@ There is **no database**. A dedicated **Amazon ElastiCache for Valkey** node (`c
 | SB-2 | `POST /api/v1/signup/trial` | Submit the trial form; runs abuse checks and the handoff. `201` done / `202` still finishing / `409` slug conflict | Yes |
 | SB-3 | `GET /api/v1/signup/{signup_id}/status` | Poll after `202`; resumes an unfinished I-1 | — (session-bound) |
 | SB-4 | `POST /api/v1/signup/{signup_id}/slug` | Pick a new slug after `409 slug_taken`; retries I-1 with the same `tenant_id` | Yes |
+| SB-5 | `POST /api/v1/signup/paid` | Direct paid signup (Phase 1.5, §19): Billing charge → RP-2 → I-1. Returns `404` until `PAID_SIGNUP_ENABLED=true`. Same session + CSRF guards as SB-2 | Yes |
 | SB-H | `GET /healthz`, `GET /readyz` | Liveness; readiness (Valkey + config) | — |
 | SB-M | `GET /metrics` | Prometheus, separate port, monitoring namespace only | — |
 
@@ -624,29 +629,42 @@ The Keycloak user is **not** recreated: RP-1 does not use the slug for a trial t
 
 ```mermaid
 stateDiagram-v2
-    [*] --> allocated: SB-2 passes checks · tenant_id allocated
-    allocated --> rejected: ineligible / email_unavailable
+    [*] --> allocated: SB-2 / SB-5 passes checks · tenant_id allocated
+
+    %% Trial path (SB-2)
+    allocated --> rejected: ineligible / email_unavailable (trial only)
     allocated --> allocated: RP-1 5xx after retries (503 to user; resubmit)
-    allocated --> identity_created: RP-1 201
+    allocated --> identity_created: RP-1 201 (trial)
+
+    %% Paid path (SB-5, Phase 1.5 §19)
+    allocated --> payment_pending: Billing call in flight (paid)
+    payment_pending --> payment_confirmed: Billing returns billing_subscription_id
+    payment_confirmed --> slug_conflict: PUB-1 pre-check finds slug taken
+    payment_confirmed --> identity_created: RP-2 201 (paid)
+
+    %% Shared I-1 path
     identity_created --> completed: I-1 201/200
     identity_created --> tenant_pending: I-1 5xx/timeout after retries
     identity_created --> slug_conflict: I-1 409 slug_already_taken
     tenant_pending --> completed: SB-3 resume succeeds
     tenant_pending --> failed: 15 min exhausted
     slug_conflict --> identity_created: SB-4 new slug
+
     completed --> [*]: TTL 10 min
     rejected --> [*]
     failed --> [*]: TTL
 ```
 
-| State | Keycloak user? | Tenant row? | Who moves it on |
-|---|---|---|---|
-| `allocated` | No | No | SB-2 (only SB-2 holds the password) |
-| `identity_created` | **Yes** | No | SB-2 inline I-1 |
-| `tenant_pending` | **Yes** | No | SB-3 polls; O&M backstop (BFF-2) |
-| `slug_conflict` | **Yes** | No | SB-4 |
-| `completed` | Yes | Yes | — |
-| `rejected` / `failed` | No / Yes | No | — (`failed` relies on the backstop) |
+| State | Keycloak user? | Tenant row? | Who moves it on | Path |
+|---|---|---|---|---|
+| `allocated` | No | No | SB-2 or SB-5 (holds the password) | Both |
+| `payment_pending` | No | No | SB-5 — Billing call in flight | Paid (§19) |
+| `payment_confirmed` | No | No | SB-5 — `billing_subscription_id` obtained | Paid (§19) |
+| `identity_created` | **Yes** | No | SB-2 inline I-1 / SB-5 post RP-2 | Both |
+| `tenant_pending` | **Yes** | No | SB-3 polls; O&M backstop (BFF-2) | Both |
+| `slug_conflict` | **Yes** | No | SB-4 | Both |
+| `completed` | Yes | Yes | — | Both |
+| `rejected` / `failed` | No / Yes | No | — (`failed` relies on the backstop) | Both |
 
 ### 9.2 Idempotency
 
@@ -1267,13 +1285,47 @@ Per O&M LLD (rev 2.33): idempotent on `tenant_id`, `409 slug_already_taken` on a
 
 ## 19. Phase 1.5 Reservation — Direct-Paid Signup
 
-Not specified in this draft (BFF-5). Reserved so Phase 1 code does not block it:
+**Status: stub implemented (2026-10-24) — ready for Phase 1.5 activation.** D-2 resolved (Commercial Domain HLD §8.3, CD-9 closed): the BFF, not Billing, calls RP-2 and I-1 after Billing confirms the charge.
 
-- Route `POST /api/v1/signup/paid` reserved (returns `404` until enabled).
-- Port `BillingClient` with a stub adapter that returns `ErrNotImplemented`.
-- Handoff states to add: `payment_pending`, `payment_confirmed` before `allocated → identity_created`; RP-2 replaces RP-1 and needs `billing_subscription_id`.
-- Must resolve before Phase 1.5: Billing authorize/charge contract, double-charge-safe idempotency, "charge accepted" vs "payment confirmed" (Stripe webhook, IAM HLD §10.7), and the O&M direct-paid ordering open item (O&M LLD §8.1b).
-- Cards stay tokenized in the browser by Stripe; no PAN ever reaches the BFF (HLD §10.1).
+### Implemented as part of the Phase 1 build
+
+The following are fully coded and will activate when `PAID_SIGNUP_ENABLED=true` and `BILLING_BASE_URL` points at the live Billing service:
+
+- **Route** `POST /api/v1/signup/paid` (SB-5) — registered in the router; returns `404` until the flag is set.
+- **`BillingClient` port** (`internal/core/port/billing.go`) — real interface: `AuthorizeAndCharge(ChargeRequest) → ChargeResponse{BillingSubscriptionID}`. Wired with `BillingStub` (returns `ErrNotImplemented`) until the HTTP adapter is built.
+- **`ProvisionDirect` (RP-2)** added to the `RealmProvisioner` port and HTTP adapter (`POST /api/v1/internal/tenants/provision-direct`, Idempotency-Key `signup:<tenant_id>:rp2`). RP-2 is already built (RP LLD §5.3, PR #27 v1.35).
+- **Handoff states** `payment_pending` and `payment_confirmed` added to `domain.HandoffState` and the Valkey state machine (§9.1).
+- **`SignupType`** field (`"trial"` | `"paid"`) added to the `Handoff` record so SB-3 and SB-4 work for both paths.
+- **`BillingSubscriptionID`** field added to `Handoff`; set after a successful charge and forwarded to RP-2.
+- **`PaidSignupService`** (`internal/core/service/paid_signup_service.go`) — full Billing → RP-2 → I-1 flow.
+- **`FakeBillingClient`** and `FakeRealmProvisioner.ProvisionDirect` added to `test/fixtures/fakes.go`.
+- **Config** `PAID_SIGNUP_ENABLED` (bool) and `BILLING_BASE_URL` / `BILLING_TIMEOUT_MS` added to `internal/config/config.go`.
+
+### SB-5 provisioning flow (Commercial HLD §8.3, D-2 resolved)
+
+```
+CAPTCHA → rate limit → validate (+ seats ≥ 1, payment_token required)
+→ allocate handoff (type=paid, state=payment_pending)
+→ Billing.AuthorizeAndCharge {tenant_id, payment_token, plan, seats}
+                              ← billing_subscription_id
+→ handoff.state = payment_confirmed
+→ PUB-1 slug pre-check (fail-open, same as trial)
+→ RP-2 provision-direct {tenant_id, plan, billing_subscription_id, admin credentials}
+                         ← keycloak_user_id   (RP-2 creates dedicated realm + user)
+→ handoff.state = identity_created
+→ I-1 POST /internal/tenants {tenant_id, slug, plan, owner_user_id}
+→ handoff.state = completed | tenant_pending (SB-3 polls)
+```
+
+Key invariants held: SB-INV-2 (password never leaves memory), SB-INV-3 (one tenant_id per attempt), SB-INV-5 (CAPTCHA before everything), SB-INV-8 (plan/name/slug identical to RP-2 and I-1). RP-2 runs before I-1 so `owner_user_id` is available (mirrors SB-INV-4 for the paid path).
+
+### Remaining work before activation
+
+1. **Build the real `BillingClient` HTTP adapter** in `internal/adapter/outbound/billing/` once the Billing service contract is finalised (`hld-billing-service.md`). Replace `buildBilling()` in `wiring.go`.
+2. **Set `PAID_SIGNUP_ENABLED=true` and `BILLING_BASE_URL`** in Helm `values-prod.yaml`.
+3. **Confirm RP-2 request field set** against RP LLD §5.3 (BillingSubscriptionID in the payload confirmed; other fields assumed to mirror RP-1 — verify).
+4. **Add SB-5 contract tests** (RP-2 Idempotency-Key, billing_subscription_id forwarded, no PAN in logs).
+5. **Cards stay tokenised in the browser by Stripe; no PAN ever reaches the BFF** (HLD §10.1). The `payment_token` field carries a Stripe payment-method reference only.
 
 ---
 

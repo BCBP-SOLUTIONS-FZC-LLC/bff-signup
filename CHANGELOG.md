@@ -8,6 +8,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Phase 1.5 Direct-Paid Signup reservation (2026-10-24)
+
+**Phase 1.5 stub fully wired — activates with `PAID_SIGNUP_ENABLED=true`:**
+
+- `internal/core/port/billing.go` — replaced `NotImplemented` stub with real `BillingClient` interface: `AuthorizeAndCharge(ChargeRequest) → *ChargeResponse{BillingSubscriptionID}` + `BillingStub` (returns `ErrNotImplemented`). `ChargeRequest` carries `{TenantID, PaymentToken, Plan, Seats, IdempotencyKey}`.
+- `internal/core/port/realm_provisioner.go` — extended `RealmProvisioner` with `ProvisionDirect` (RP-2). Added `ProvisionDirectRequest` (mirrors RP-1 + `BillingSubscriptionID`) and `ProvisionDirectResponse`.
+- `internal/adapter/outbound/realmprovisioner/client.go` — implemented `ProvisionDirect` HTTP call to `POST /api/v1/internal/tenants/provision-direct`, Idempotency-Key `signup:<tenant_id>:rp2`.
+- `internal/core/domain/handoff.go` — added `StatePaymentPending`, `StatePaymentConfirmed`, `SignupType` (`"trial"` | `"paid"`), `Type` field, and `BillingSubscriptionID` field to `Handoff`.
+- `internal/core/service/paid_signup_service.go` — new `PaidSignupService` (SB-5): CAPTCHA → rate limit → validate → Billing charge → RP-2 → I-1 inline (reuses `HandoffOrchestrator.runI1`).
+- `internal/core/service/signup_service.go` — extracted `emailHMAC(email, key)` to a package-level function shared by both signup services.
+- `internal/adapter/inbound/http/handlers.go` — added `SubmitPaid` handler; `Handlers` gains `paidSignup *service.PaidSignupService`.
+- `internal/adapter/inbound/http/router.go` — `POST /api/v1/signup/paid` wired; returns `404` unless `PaidSignupEnabled=true`. Added `PaidSignupEnabled` to `RouterConfig`.
+- `internal/adapter/inbound/http/dto.go` — added `PaidSignupRequest` (+ `seats int`, `payment_token string`) and `PaidSignupResponse`.
+- `internal/config/config.go` — added `BillingURL`, `BillingTimeoutMs` (default 5000 ms), `PaidSignupEnabled` (env `PAID_SIGNUP_ENABLED`). Added `BillingTimeout()` and `envBool()`.
+- `cmd/server/main.go` — wires `PaidSignupService`, passes `PaidSignupEnabled` to router.
+- `cmd/server/wiring.go` — added `buildBilling()` returning `port.BillingStub{}`.
+- `test/fixtures/fakes.go` — added `FakeBillingClient`, `FakeRealmProvisioner.ProvisionDirect` and `DirectCalls`.
+
+**D-2 resolved (Commercial Domain HLD §8.3, CD-9 closed):** BFF (not Billing) calls RP-2 and I-1 after Billing confirms the charge. Flow: Billing → RP-2 → I-1.
+
+---
+
 ### Added — Initial implementation (2026-10-22)
 
 **Service foundation:**

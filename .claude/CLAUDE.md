@@ -4,10 +4,16 @@ This file provides guidance to Claude Code when working with **bff-signup**, the
 
 ## What This Repo Is
 
-`bff-signup` is the platform's **public, unauthenticated tenant-onboarding intake** (Go module: `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`, Go 1.23). It serves the signup form's JSON API, enforces abuse controls (rate limit, CAPTCHA, CSRF), and runs the provisioning handoff:
+`bff-signup` is the platform's **public, unauthenticated tenant-onboarding intake** (Go module: `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`, Go 1.23). It serves the signup form's JSON API, enforces abuse controls (rate limit, CAPTCHA, CSRF), and runs the provisioning handoff.
 
+**Trial path (SB-2, Phase 1 — active):**
 1. Trial eligibility check → O&M `POST /internal/trial-eligibility` (CR-4)
-2. RP-1 → Realm Provisioner `POST /internal/tenants/provision-trial` (creates Keycloak user)
+2. RP-1 → Realm Provisioner `POST /internal/tenants/provision-trial` (creates Keycloak user in shared trial realm)
+3. I-1 → Org & Membership `POST /internal/tenants` (creates tenant row)
+
+**Direct paid path (SB-5, Phase 1.5 — stub wired, returns 404 until `PAID_SIGNUP_ENABLED=true`):**
+1. Billing → `AuthorizeAndCharge` → `billing_subscription_id`
+2. RP-2 → Realm Provisioner `POST /internal/tenants/provision-direct` (creates dedicated realm + Keycloak user)
 3. I-1 → Org & Membership `POST /internal/tenants` (creates tenant row)
 
 **Owns:** ephemeral Valkey state only (sessions, handoffs, rate-limit counters). No database. No event bus participation.
@@ -16,9 +22,9 @@ This file provides guidance to Claude Code when working with **bff-signup**, the
 
 **Namespace / identity:** `bff` namespace, service account `bff-signup`, SPIFFE `spiffe://<trust-domain>/ns/bff/sa/bff-signup` (BFF-1).
 
-**Phase:** Phase 1 — trial signup only. Direct-paid (Phase 1.5) is stubbed in `port/billing.go`.
+**Phase 1.5 activation:** set `PAID_SIGNUP_ENABLED=true` and `BILLING_BASE_URL=<url>` in Helm values, then replace `buildBilling()` in `cmd/server/wiring.go` with the real HTTP adapter.
 
-**LLD:** `docs/lld/signup-bff-lld.md` v0.6 — canonical reference for all design decisions.
+**LLD:** `docs/lld/signup-bff-lld.md` v0.6 — canonical reference for all design decisions. §19 documents Phase 1.5 stub status and remaining activation steps.
 
 ---
 
@@ -73,11 +79,12 @@ make ci              # full local CI gate (tidy + fmt + vet + lint + test + buil
 
 ## Critical Invariants (from LLD §2.3)
 
-- **SB-INV-2:** The plain password never leaves process memory. Not logged, not in Valkey, not in traces. Only `hashed_password_seed` (PBKDF2-SHA512 JSON) is sent to RP-1.
+- **SB-INV-2:** The plain password never leaves process memory. Not logged, not in Valkey, not in traces. Only `hashed_password_seed` (PBKDF2-SHA512 JSON) is sent to RP-1 / RP-2.
 - **SB-INV-3:** One `tenant_id` per signup attempt — allocated once, reused for every retry/resume/slug change.
-- **SB-INV-4:** RP-1 before I-1, always. `owner_user_id` sent to I-1 is the `keycloak_user_id` RP-1 returned.
+- **SB-INV-4:** RP before I-1, always. `owner_user_id` sent to I-1 is the `keycloak_user_id` returned by RP-1 (trial) or RP-2 (paid).
 - **SB-INV-5:** CAPTCHA and rate limit run before any internal call or password hashing.
-- **SB-INV-8:** RP-1 and I-1 carry identical `plan`, slug and name. `plan` is always `starter`/`pro`/`enterprise`, never `"trial"`.
+- **SB-INV-8:** RP and I-1 carry identical `plan`, slug and name. `plan` is always `starter`/`pro`/`enterprise`, never `"trial"`.
+- **Phase 1.5:** `payment_token` is a Stripe browser token — no PAN ever reaches the BFF. Billing failure deletes the handoff (no orphaned charges). RP-2 Idempotency-Key format: `signup:<tenant_id>:rp2`.
 
 ---
 

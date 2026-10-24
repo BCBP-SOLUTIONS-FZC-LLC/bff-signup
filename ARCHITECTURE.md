@@ -14,19 +14,19 @@ Clean Architecture with hexagonal adapter layout. Inner layers have **zero knowl
 graph TD
     subgraph cmd["Composition Root — cmd/server/"]
         main["main.go\nconfig validation → Valkey ping → stores → clients → services → router → HTTP server\ngraceful shutdown: HTTP drain → Valkey close"]
-        wiring["wiring.go\nbuildValkeyClient · buildValkeyStores\nbuildRealmProvisioner · buildOrgMembership\nbuildTurnstile · buildPasswordHasher · buildCatalog"]
+        wiring["wiring.go\nbuildValkeyClient · buildValkeyStores\nbuildRealmProvisioner · buildOrgMembership\nbuildTurnstile · buildPasswordHasher · buildCatalog · buildBilling (stub §19)"]
     end
 
     subgraph adapters_in["Inbound Adapters — internal/adapter/inbound/http/"]
-        router["router.go\nSB-1 GET /session · SB-2 POST /trial\nSB-3 GET /{id}/status · SB-4 POST /{id}/slug\nGET /healthz · GET /readyz"]
-        handlers["handlers.go\nSession · SubmitTrial · GetStatus · ChangeSlug"]
+        router["router.go\nSB-1 GET /session · SB-2 POST /trial · SB-5 POST /paid (§19)\nSB-3 GET /{id}/status · SB-4 POST /{id}/slug\nGET /healthz · GET /readyz"]
+        handlers["handlers.go\nSession · SubmitTrial · SubmitPaid (§19) · GetStatus · ChangeSlug"]
         middleware["middleware/\nsession.go — cookie extract + Set-Cookie (SameSite=Strict)\ncsrf.go — X-CSRF-Token extract + Origin validation\nclientip.go — x-envoy-external-address (never X-Forwarded-For)"]
         dto["dto.go — request/response DTOs\nerrors.go — domain error → HTTP status mapping"]
     end
 
     subgraph adapters_out["Outbound Adapters — internal/adapter/outbound/"]
         valkey_s["valkey/\nsession_store.go — sbff:sess: (30 min sliding)\nhandoff_store.go — sbff:handoff: + distributed lock (SET NX PX 15s Lua release)\nrate_limiter.go — sbff:rl:ip/email/sess/poll counters"]
-        rp["realmprovisioner/\nRP-1 POST /internal/tenants/provision-trial\nIdempotency-Key: signup:tenantID:rp1\nRFC 9457 errorCode branching (never detail)"]
+        rp["realmprovisioner/\nRP-1 POST /internal/tenants/provision-trial · Key: signup:tenantID:rp1\nRP-2 POST /internal/tenants/provision-direct · Key: signup:tenantID:rp2 (§19)\nRFC 9457 errorCode branching (never detail)"]
         om["orgmembership/\nI-1 POST /internal/tenants (idempotent on tenant_id)\neligibility POST /internal/trial-eligibility\nRFC 9457 errorCode branching"]
         turnstile["turnstile/\nCloudflare siteverify\nhostname verification after success"]
         catalog["catalog/\n5-min in-process cache\nstatic plansFallback on failure"]
@@ -34,8 +34,8 @@ graph TD
     end
 
     subgraph core["Core — internal/core/"]
-        service["service/\nsession_service.go — SB-1: create session, CSRF validation\nsignup_service.go — SB-2: CAPTCHA → rate-limit → validate → hash → orchestrate\nhandoff_orchestrator.go — eligibility → RP-1 → I-1 inline (retry) → 202 on exhaust\nstatus_service.go — SB-3: resume I-1 · SB-4: change slug"]
-        port["port/\nSessionStore · HandoffStore · RateLimiter\nRealmProvisioner · OrgMembership\nCaptchaVerifier · Catalog · PasswordHasher\nClock · IDGenerator · BillingClient (stub §19)"]
+        service["service/\nsession_service.go — SB-1: create session, CSRF validation\nsignup_service.go — SB-2 trial: CAPTCHA → rate-limit → validate → hash → orchestrate\npaid_signup_service.go — SB-5 paid: Billing → RP-2 → I-1 (Phase 1.5, §19)\nhandoff_orchestrator.go — eligibility → RP-1 → I-1 inline (retry) → 202 on exhaust\nstatus_service.go — SB-3: resume I-1 · SB-4: change slug"]
+        port["port/\nSessionStore · HandoffStore · RateLimiter\nRealmProvisioner (RP-1 + RP-2) · OrgMembership\nCaptchaVerifier · Catalog · PasswordHasher\nBillingClient (stub → real in Phase 1.5, §19)\nClock · IDGenerator"]
         domain["domain/\nerrors.go — sentinel errors + DomainError{Cause,Message,Details}\nhandoff.go — Handoff record + HandoffState (7 states)\nplan.go — Plan type (starter|pro|enterprise only)\nsignup.go — field validators (company, name, email, password)\nslug.go — derive · validate · suggest"]
     end
 
@@ -46,7 +46,7 @@ graph TD
     subgraph tests["Tests — test/"]
         unit["unit/\ndomain/ — slug · password · handoff state machine\nservice/ — signup flow · CAPTCHA order · plan invariants"]
         integration["integration/ (build tag: integration)\nReal Valkey via docker-compose / CI service container:\nsession CRUD · handoff state update · lock acquire/release · rate counters"]
-        fixtures["fixtures/\nFakeSessionStore · FakeHandoffStore · FakeRateLimiter\nFakeCaptchaVerifier · FakeRealmProvisioner · FakeOrgMembership\nFakeClock · FakeIDGenerator · FakePasswordHasher"]
+        fixtures["fixtures/\nFakeSessionStore · FakeHandoffStore · FakeRateLimiter\nFakeCaptchaVerifier · FakeRealmProvisioner (ProvisionTrial + ProvisionDirect)\nFakeBillingClient · FakeOrgMembership · FakeClock · FakeIDGenerator · FakePasswordHasher"]
     end
 
     main    --> wiring
@@ -126,9 +126,19 @@ When I-1 fails after RP-1 succeeds: inline retries (×2, 100ms/250ms) → `tenan
 
 ```mermaid
 stateDiagram-v2
-    [*] --> allocated : SB-2 passes checks
-    allocated --> rejected : ineligible / email unavailable
-    allocated --> identity_created : RP-1 201
+    [*] --> allocated : SB-2/SB-5 passes checks
+
+    %% Trial path (SB-2)
+    allocated --> rejected : ineligible / email unavailable (trial)
+    allocated --> identity_created : RP-1 201 (trial)
+
+    %% Paid path (SB-5, Phase 1.5 §19)
+    allocated --> payment_pending : Billing call in flight (paid)
+    payment_pending --> payment_confirmed : billing_subscription_id obtained
+    payment_confirmed --> identity_created : RP-2 201 (paid)
+    payment_confirmed --> slug_conflict : PUB-1 slug taken (paid)
+
+    %% Shared from identity_created
     identity_created --> completed : I-1 201/200
     identity_created --> tenant_pending : I-1 5xx after retries
     identity_created --> slug_conflict : I-1 409 SLUG_ALREADY_TAKEN

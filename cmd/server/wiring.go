@@ -21,6 +21,14 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
 
+// buildBilling returns the BillingClient to use.
+// When PAID_SIGNUP_ENABLED=true and BILLING_BASE_URL is set, a real HTTP adapter
+// will be returned here once it is built (Phase 1.5, LLD §19). Until then, the
+// stub is used regardless — the /paid route returns 404 when the flag is false.
+func buildBilling(_ *config.Config) port.BillingClient {
+	return port.BillingStub{}
+}
+
 // buildValkeyClient parses the VALKEY_URL and returns a connected go-redis client.
 // Caller is responsible for calling rdb.Ping and rdb.Close.
 func buildValkeyClient(valkeyURL string) (*redis.Client, error) {

@@ -43,3 +43,11 @@ Per-file notes on non-obvious behaviour, wiring decisions, and invariants.
 - **`internal/adapter/outbound/catalog/client.go`** — in-process 5-minute cache with mutex. On Catalog Service failure, serves the last good copy or the static `plansFallback` from config. The fallback codes must always be exactly `starter`/`pro`/`enterprise` (never `"trial"`).
 
 - **`deploy/helm/`** — Helm chart with `values-{dev,staging,prod}.yaml`. NetworkPolicy ingress: only `envoy-gateway-system` (API port 8080) and `monitoring` (metrics port 9090). HPA is CPU-only (PBKDF2 is CPU-bound; RPS-based scaling needs a custom-metrics adapter). PDB `minAvailable: 1`. ServiceEntry for Turnstile is off by default — enable in prod if mesh uses `REGISTRY_ONLY`.
+
+- **`internal/core/port/billing.go`** — real `BillingClient` interface: `AuthorizeAndCharge(ChargeRequest) → *ChargeResponse`. `BillingStub` returns `ErrNotImplemented` and is the Phase 1 wiring. When building the real HTTP adapter, implement the interface and swap `buildBilling()` in `wiring.go`. `ChargeRequest.IdempotencyKey` format: `"charge:<tenant_id>"`.
+
+- **`internal/core/port/realm_provisioner.go`** — now owns both RP-1 (`ProvisionTrial`) and RP-2 (`ProvisionDirect`). `ProvisionDirectRequest` mirrors `ProvisionTrialRequest` plus `BillingSubscriptionID`; confirm exact RP-2 field set against RP LLD §5.3 before activating Phase 1.5.
+
+- **`internal/core/service/paid_signup_service.go`** — SB-5 entry point (Phase 1.5, LLD §19). Same CAPTCHA-first, rate-limit, validate sequence as `signup_service.go`, then: Billing charge → state=`payment_confirmed` → PUB-1 slug pre-check (fail-open) → RP-2 → state=`identity_created` → reuse `HandoffOrchestrator.runI1` for I-1. `emailHMAC` is now a package-level function shared by both signup services. Only wired when `PAID_SIGNUP_ENABLED=true`.
+
+- **`internal/adapter/inbound/http/router.go`** — `PaidSignupEnabled` field in `RouterConfig` controls whether `POST /paid` is live or returns `404`. The 404 path is registered unconditionally so the route is never unmatched.

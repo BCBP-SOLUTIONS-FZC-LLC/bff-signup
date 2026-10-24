@@ -32,6 +32,10 @@ type Config struct {
 	RealmProvisionerURL string
 	OrgMembershipURL    string
 	CatalogURL          string
+	BillingURL          string // Phase 1.5 (LLD §19): empty until Billing service is built
+
+	// Phase 1.5 feature flag (LLD §19)
+	PaidSignupEnabled bool // PAID_SIGNUP_ENABLED=true enables POST /paid and the Billing client
 
 	// Timeouts
 	RPTimeoutMs          int
@@ -39,6 +43,7 @@ type Config struct {
 	EligibilityTimeoutMs int
 	TurnstileTimeoutMs   int
 	RequestDeadlineMs    int
+	BillingTimeoutMs     int // Phase 1.5 (LLD §19): Billing call timeout
 
 	// Rate limits (configurable, LLD §12)
 	SignupsPerIPPerHour    int
@@ -82,12 +87,15 @@ func Load() (*Config, error) {
 		RealmProvisionerURL: mustEnv("REALM_PROVISIONER_BASE_URL"),
 		OrgMembershipURL:    mustEnv("ORG_MEMBERSHIP_BASE_URL"),
 		CatalogURL:          envOr("CATALOG_BASE_URL", ""),
+		BillingURL:          envOr("BILLING_BASE_URL", ""),
+		PaidSignupEnabled:   envBool("PAID_SIGNUP_ENABLED"),
 
 		RPTimeoutMs:          envInt("RP_TIMEOUT_MS", 900),
 		I1TimeoutMs:          envInt("I1_TIMEOUT_MS", 300),
 		EligibilityTimeoutMs: envInt("ELIGIBILITY_TIMEOUT_MS", 150),
 		TurnstileTimeoutMs:   envInt("TURNSTILE_TIMEOUT_MS", 300),
 		RequestDeadlineMs:    envInt("REQUEST_DEADLINE_MS", 2500),
+		BillingTimeoutMs:     envInt("BILLING_TIMEOUT_MS", 5000),
 
 		SignupsPerIPPerHour:    envInt("RATE_SIGNUPS_PER_IP_PER_HOUR", 3),
 		AttemptsPerEmailPerDay: envInt("RATE_ATTEMPTS_PER_EMAIL_PER_DAY", 5),
@@ -165,6 +173,7 @@ func (c *Config) I1Timeout() time.Duration          { return ms(c.I1TimeoutMs) }
 func (c *Config) EligibilityTimeout() time.Duration { return ms(c.EligibilityTimeoutMs) }
 func (c *Config) TurnstileTimeout() time.Duration   { return ms(c.TurnstileTimeoutMs) }
 func (c *Config) RequestDeadline() time.Duration    { return ms(c.RequestDeadlineMs) }
+func (c *Config) BillingTimeout() time.Duration     { return ms(c.BillingTimeoutMs) }
 
 func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 
@@ -183,6 +192,10 @@ func mustEnv(key string) string {
 		panic(fmt.Sprintf("required environment variable %s is not set", key))
 	}
 	return v
+}
+
+func envBool(key string) bool {
+	return strings.EqualFold(os.Getenv(key), "true")
 }
 
 func envInt(key string, def int) int {

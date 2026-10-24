@@ -57,6 +57,30 @@ type SlugChangeRequest struct {
 	Slug string `json:"slug" binding:"required"`
 }
 
+// ── SB-5 request / response (Phase 1.5, LLD §19) ─────────────────────────────
+
+type PaidSignupRequest struct {
+	CompanyName  string      `json:"company_name"  binding:"required"`
+	Slug         string      `json:"slug"`
+	AdminName    string      `json:"admin_name"    binding:"required"`
+	AdminEmail   string      `json:"admin_email"   binding:"required"`
+	Password     string      `json:"password"      binding:"required"`
+	Plan         domain.Plan `json:"plan"          binding:"required"`
+	Seats        int         `json:"seats"         binding:"required"`
+	PaymentToken string      `json:"payment_token" binding:"required"` // Stripe token from browser
+	AcceptTerms  bool        `json:"accept_terms"`
+	TermsVersion string      `json:"terms_version" binding:"required"`
+	CaptchaToken string      `json:"captcha_token" binding:"required"`
+}
+
+type PaidSignupResponse struct {
+	SignupID              string `json:"signup_id"`
+	Status                string `json:"status"`
+	EmailVerificationSent bool   `json:"email_verification_sent,omitempty"`
+	Next                  string `json:"next,omitempty"`
+	PollAfterMs           int    `json:"poll_after_ms,omitempty"`
+}
+
 // ── Slug taken (409) response ─────────────────────────────────────────────────
 
 type SlugTakenResponse struct {

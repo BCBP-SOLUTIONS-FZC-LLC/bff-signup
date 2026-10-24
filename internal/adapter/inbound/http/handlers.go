@@ -17,6 +17,7 @@ import (
 type Handlers struct {
 	session             *service.SessionService
 	signup              *service.SignupService
+	paidSignup          *service.PaidSignupService // Phase 1.5 (LLD §19); nil when disabled
 	status              *service.StatusService
 	catalog             port.Catalog
 	siteKey             string
@@ -29,6 +30,7 @@ type Handlers struct {
 func NewHandlers(
 	session *service.SessionService,
 	signup *service.SignupService,
+	paidSignup *service.PaidSignupService,
 	status *service.StatusService,
 	catalog port.Catalog,
 	siteKey string,
@@ -37,7 +39,12 @@ func NewHandlers(
 	requestDeadline time.Duration,
 	currentTermsVersion string,
 ) *Handlers {
-	return &Handlers{session, signup, status, catalog, siteKey, policy, slugRules, requestDeadline, currentTermsVersion}
+	return &Handlers{
+		session: session, signup: signup, paidSignup: paidSignup,
+		status: status, catalog: catalog, siteKey: siteKey,
+		policy: policy, slugRules: slugRules,
+		requestDeadline: requestDeadline, currentTermsVersion: currentTermsVersion,
+	}
 }
 
 // ── SB-1: GET /api/v1/signup/session ─────────────────────────────────────────
@@ -364,6 +371,100 @@ func truncateUserAgent(ua string) string {
 		}
 	}
 	return string(b)
+}
+
+// ── SB-5: POST /api/v1/signup/paid (Phase 1.5, LLD §19) ──────────────────────
+
+// SubmitPaid processes a direct paid signup (SB-5).
+// The route only exists when PAID_SIGNUP_ENABLED=true; otherwise the router
+// returns 404 so no card data ever reaches an unready handler.
+//
+// @Summary      Submit direct paid signup (SB-5)
+// @Description  Authorises and charges the Stripe payment token, then provisions
+// @Description  a dedicated realm (RP-2) and tenant row (I-1) in one request.
+// @Tags         signup
+// @Accept       json
+// @Produce      json
+// @Param        X-CSRF-Token  header    string            true  "CSRF token from SB-1"
+// @Param        body          body      PaidSignupRequest true  "Paid signup payload"
+// @Success      201  {object}  PaidSignupResponse  "Signup fully provisioned"
+// @Success      202  {object}  PaidSignupResponse  "Identity created; tenant still provisioning — poll SB-3"
+// @Failure      400  {object}  ErrorResponse       "Validation failed"
+// @Failure      401  {object}  ErrorResponse       "Session expired or missing"
+// @Failure      403  {object}  ErrorResponse       "CSRF token invalid or CAPTCHA failed"
+// @Failure      409  {object}  SlugTakenResponse   "Slug already taken — submit SB-4 with a new slug"
+// @Failure      429  {object}  ErrorResponse       "Rate limit exceeded"
+// @Failure      503  {object}  ErrorResponse       "Dependency unavailable"
+// @Security     SessionCookie
+// @Security     CSRFToken
+// @Router       /paid [post]
+func (h *Handlers) SubmitPaid(c *gin.Context) {
+	sess, ok := sessionFromContext(c)
+	if !ok {
+		return
+	}
+
+	var req PaidSignupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		handleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+		return
+	}
+
+	locale := acceptLocale(c)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.requestDeadline)
+	defer cancel()
+
+	result, err := h.paidSignup.Submit(ctx, service.PaidSignupInput{
+		CompanyName:   req.CompanyName,
+		Slug:          req.Slug,
+		AdminName:     req.AdminName,
+		AdminEmail:    req.AdminEmail,
+		Password:      req.Password,
+		Plan:          req.Plan,
+		Seats:         req.Seats,
+		PaymentToken:  req.PaymentToken,
+		AcceptTerms:   req.AcceptTerms,
+		TermsVersion:  req.TermsVersion,
+		CaptchaToken:  req.CaptchaToken,
+		DefaultLocale: locale,
+		ClientIP:      middleware.ClientIPFromContext(c),
+		UserAgent:     truncateUserAgent(c.GetHeader("User-Agent")),
+		Session:       sess,
+	})
+	if err != nil {
+		if de, ok := err.(*domain.DomainError); ok && de.Cause == domain.ErrSlugTaken {
+			var resp SlugTakenResponse
+			resp.Error = "slug_taken"
+			resp.Status = http.StatusConflict
+			resp.Message = "That workspace address is taken."
+			resp.RequestID = c.GetString("X-Request-Id")
+			resp.Details.SignupID = sess.SignupID
+			if result != nil {
+				resp.Details.Suggestions = result.SlugSuggestions
+			}
+			c.JSON(http.StatusConflict, resp)
+			return
+		}
+		handleError(c, err)
+		return
+	}
+
+	switch result.State { //nolint:exhaustive
+	case domain.StateCompleted:
+		c.JSON(http.StatusCreated, PaidSignupResponse{
+			SignupID:              result.SignupID,
+			Status:                "completed",
+			EmailVerificationSent: result.EmailVerificationSent,
+			Next:                  "check_email",
+		})
+	default:
+		c.JSON(http.StatusAccepted, PaidSignupResponse{
+			SignupID:    result.SignupID,
+			Status:      "provisioning",
+			PollAfterMs: 2000,
+		})
+	}
 }
 
 // acceptLocale derives default_locale from Accept-Language header (allow-listed).

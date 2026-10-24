@@ -10,6 +10,7 @@ Base: `https://signup.bcbpsolutions.com/api/v1/signup`
 | SB-2 | `POST /trial` | Cookie + CSRF | Submit trial form; runs full provisioning handoff |
 | SB-3 | `GET /{signup_id}/status` | Cookie (session-bound) | Poll provisioning status; resumes I-1 if tenant_pending |
 | SB-4 | `POST /{signup_id}/slug` | Cookie + CSRF | Pick a new slug after 409 slug_taken |
+| SB-5 | `POST /paid` | Cookie + CSRF | Direct paid signup (Phase 1.5, §19); returns 404 until `PAID_SIGNUP_ENABLED=true` |
 | SB-H | `GET /healthz`, `GET /readyz` | None | Liveness; readiness (Valkey ping) |
 | SB-M | `GET /metrics` | None (monitoring ns only) | Prometheus metrics on port 9090 |
 
@@ -48,11 +49,13 @@ SB-2 Responses: `201 completed`, `202 provisioning {poll_after_ms:2000}`, `409 s
 
 All internal calls carry: `x-tenant-id`, `x-user-id: 00000000-0000-0000-0000-0000000000a1` (system principal), `traceparent`, `x-request-id`.
 
-| Step | Call | Key header |
-|---|---|---|
-| E | `POST /api/v1/internal/trial-eligibility` {email_hash} → O&M | — (read-only) |
-| 1 | `POST /api/v1/internal/tenants/provision-trial` → RP | `Idempotency-Key: signup:<tenant_id>:rp1` |
-| 2 | `POST /api/v1/internal/tenants` → O&M | — (idempotent on tenant_id) |
+| Step | Call | Key header | Path |
+|---|---|---|---|
+| E | `POST /api/v1/internal/trial-eligibility` {email_hash} → O&M | — (read-only) | Trial |
+| 1 | `POST /api/v1/internal/tenants/provision-trial` → RP (RP-1) | `Idempotency-Key: signup:<tenant_id>:rp1` | Trial |
+| 2 | `POST /api/v1/internal/tenants` → O&M (I-1) | — (idempotent on tenant_id) | Both |
+| B | Billing `AuthorizeAndCharge` → `{billing_subscription_id}` (§19) | `Idempotency-Key: charge:<tenant_id>` | Paid |
+| RP2 | `POST /api/v1/internal/tenants/provision-direct` → RP (RP-2) (§19) | `Idempotency-Key: signup:<tenant_id>:rp2` | Paid |
 
 **No Idempotency-Key on I-1** — O&M is idempotent by state on `tenant_id` (ON CONFLICT DO NOTHING).
 
@@ -95,3 +98,21 @@ The BFF is not an event producer or consumer (LLD §7). Events caused by its cal
 | `TenantCreated`, `TrialStarted`, `TenantRoleGranted` | Org & Membership | After I-1 creates the tenant row |
 
 `TenantIdentityProvisioned` drives the **O&M backstop** — if the BFF's I-1 call fails and the user abandons, O&M's `tenant-orgm-q` consumer creates the tenant from this event. SNS subscription filter for `tenant-orgm-q` must include `TenantIdentityProvisioned` (SRE action, BFF-2 SRE).
+
+## SB-5 Request (Phase 1.5, LLD §19)
+
+```json
+{
+  "company_name": "Acme Bidding Co", "slug": "acme",
+  "admin_name": "Dana Owner", "admin_email": "owner@acme.example",
+  "password": "••••••••••••", "plan": "pro",
+  "seats": 5,
+  "payment_token": "pm_stripe_token_from_browser",
+  "accept_terms": true, "terms_version": "2026-09",
+  "captcha_token": "0.xxxx"
+}
+```
+
+SB-5 responses: `201 completed`, `202 provisioning {poll_after_ms:2000}`, `409 slug_taken {signup_id, suggestions[]}`.
+
+`payment_token` is a Stripe payment-method reference tokenised in the browser — no PAN ever reaches the BFF (HLD §10.1). Returns `404` until `PAID_SIGNUP_ENABLED=true`.

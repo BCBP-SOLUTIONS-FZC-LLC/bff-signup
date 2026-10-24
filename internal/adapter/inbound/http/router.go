@@ -18,11 +18,12 @@ import (
 
 // RouterConfig holds all router dependencies (LLD §3, §13.1).
 type RouterConfig struct {
-	Handlers       *Handlers
-	SessionService *service.SessionService
-	Valkey         port.HandoffStore // used as a pinger for /readyz
-	PublicHost     string
-	DocsEnabled    bool // serve Swagger UI (always on in dev; gated in prod)
+	Handlers          *Handlers
+	SessionService    *service.SessionService
+	Valkey            port.HandoffStore // used as a pinger for /readyz
+	PublicHost        string
+	DocsEnabled       bool // serve Swagger UI (always on in dev; gated in prod)
+	PaidSignupEnabled bool // Phase 1.5 (LLD §19): enables POST /paid; false → 404
 }
 
 // NewRouter builds the Gin engine with all routes and middleware (LLD §5.2).
@@ -104,6 +105,20 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			requireValidatedSession(cfg.SessionService),
 			cfg.Handlers.ChangeSlug,
 		)
+
+		// SB-5: direct paid signup (Phase 1.5, LLD §19)
+		// Returns 404 until PAID_SIGNUP_ENABLED=true so no card data reaches an unready handler.
+		if cfg.PaidSignupEnabled {
+			v1.POST("/paid",
+				middleware.ValidateOrigin(cfg.PublicHost),
+				requireValidatedSession(cfg.SessionService),
+				cfg.Handlers.SubmitPaid,
+			)
+		} else {
+			v1.POST("/paid", func(c *gin.Context) {
+				c.JSON(http.StatusNotFound, ErrorResponse{Error: "not_implemented", Status: http.StatusNotFound})
+			})
+		}
 	}
 
 	return r

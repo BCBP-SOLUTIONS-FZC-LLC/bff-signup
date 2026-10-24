@@ -14,13 +14,14 @@ This service is the **public onboarding intake** for self-service trial signups.
 | Concern | Owner |
 |---|---|
 | Trial signup form API (SB-1…SB-4) | **This service** |
+| Direct paid signup (SB-5) | **This service** (stub; activates with `PAID_SIGNUP_ENABLED=true`) |
 | Abuse controls (CAPTCHA, rate limits, CSRF, WAF) | **This service** + ALB |
 | Password hashing (PBKDF2-SHA512) | **This service** — authoritative at signup |
 | Keycloak user creation | Realm Provisioner (RP-1) |
 | Tenant row creation, one-trial ledger | Org & Membership (I-1, eligibility) |
 | Session, handoff, rate-limit counters | Ephemeral Valkey (no DB) |
 | Login, tokens, MFA, email verification | Keycloak (built-in flows) |
-| Billing, subscriptions | Billing service (Phase 1.5 — not built) |
+| Billing, subscriptions | Billing service (Phase 1.5 — stub wired, route reserved; see §19 LLD) |
 | Signup page UI | Web frontend app |
 
 **This service owns no durable business data.** All Valkey state expires within 24 hours. There is nothing to erase on a GDPR request.
@@ -53,6 +54,7 @@ Metrics: `GET /metrics` on port 9090 (monitoring namespace only).
 | SB-2 | `POST /api/v1/signup/trial` | Cookie + `X-CSRF-Token` | Submit trial form; runs CAPTCHA → rate limit → validate → hash → provision |
 | SB-3 | `GET /api/v1/signup/{signup_id}/status` | Cookie (session-bound) | Poll provisioning status; resumes I-1 if `tenant_pending` |
 | SB-4 | `POST /api/v1/signup/{signup_id}/slug` | Cookie + `X-CSRF-Token` | Pick a new slug after `409 slug_taken`; retries I-1 |
+| SB-5 | `POST /api/v1/signup/paid` | Cookie + `X-CSRF-Token` | Submit direct paid form (Phase 1.5); returns `404` until `PAID_SIGNUP_ENABLED=true` |
 
 ### SB-1 response shape
 
@@ -168,10 +170,10 @@ bff-signup/
 │   ├── core/
 │   │   ├── domain/      ← Errors, Handoff state machine, Plan, slug rules, password validation
 │   │   ├── port/        ← All port interfaces
-│   │   └── service/     ← Session, Signup, HandoffOrchestrator, Status
+│   │   └── service/     ← Session, Signup, PaidSignup, HandoffOrchestrator, Status
 │   └── adapter/
-│       ├── inbound/http/   ← Gin router, handlers (SB-1…4), middleware
-│       └── outbound/       ← Valkey, RP-1, O&M, Turnstile, Catalog, PBKDF2 hasher
+│       ├── inbound/http/   ← Gin router, handlers (SB-1…5), middleware
+│       └── outbound/       ← Valkey, RP-1, RP-2, O&M, Turnstile, Catalog, PBKDF2 hasher
 ├── pkg/signupctx/       ← SignupContext{Session, ClientIP}
 ├── test/                ← All tests (unit, integration, fixtures)
 ├── deploy/helm/         ← Helm chart (dev/staging/prod values)
@@ -191,6 +193,22 @@ SB-4: new slug → retry I-1 (same tenant_id, same Keycloak user)
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full sequence diagrams and the handoff state machine.
+
+### Cross-service dependencies
+
+| Service | Calls | Protocol | Phase |
+|---|---|---|---|
+| **Realm Provisioner** | RP-1 `POST /internal/tenants/provision-trial` | mTLS (Istio) | 1 |
+| **Realm Provisioner** | RP-2 `POST /internal/tenants/provision-direct` | mTLS (Istio) | 1.5 (stub) |
+| **Org & Membership** | I-1 `POST /internal/tenants` | mTLS (Istio) | 1 |
+| **Org & Membership** | Eligibility `POST /internal/trial-eligibility` | mTLS (Istio) | 1 |
+| **Org & Membership** | PUB-1 slug pre-check `GET /public/tenants/resolve` | mTLS (Istio) | 1 |
+| **Billing** | `AuthorizeAndCharge` (endpoint TBD — stub) | mTLS (Istio) | 1.5 (stub) |
+| **Cloudflare Turnstile** | `POST siteverify` | HTTPS | 1 |
+| **Valkey** | Session, handoff, rate-limit counters | TLS AUTH | 1 |
+| **Catalog / Admin Config** | `GET /internal/plans` (plan list) | mTLS (Istio) | 1 (optional) |
+
+All internal calls carry system principal headers (`x-user-id: …00a1`, `x-tenant-id`, `Idempotency-Key` where required). The BFF never reads a JWT — it has no authenticated users.
 
 ---
 

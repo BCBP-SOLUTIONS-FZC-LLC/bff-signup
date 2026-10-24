@@ -2,6 +2,7 @@
 
 ## Handoff State Machine (LLD §9.1)
 
+Trial path (SB-2):
 ```
 [start] → allocated → identity_created → completed
                    ↘ rejected         ↗ tenant_pending → completed
@@ -9,14 +10,23 @@
                    identity_created → slug_conflict → identity_created (SB-4)
 ```
 
-| State | Keycloak user? | Tenant row? | Who moves it |
-|---|---|---|---|
-| `allocated` | No | No | SB-2 only (holds the password) |
-| `identity_created` | Yes | No | SB-2 inline I-1 |
-| `tenant_pending` | Yes | No | SB-3 polling; O&M backstop |
-| `slug_conflict` | Yes | No | SB-4 |
-| `completed` | Yes | Yes | — |
-| `rejected` / `failed` | No / Yes | No | — |
+Paid path (SB-5, Phase 1.5 §19):
+```
+[start] → allocated → payment_pending → payment_confirmed → identity_created → completed
+                                                          ↘ slug_conflict (PUB-1)
+                   identity_created → tenant_pending → completed / failed (same as trial)
+```
+
+| State | Keycloak user? | Tenant row? | Who moves it | Path |
+|---|---|---|---|---|
+| `allocated` | No | No | SB-2 or SB-5 | Both |
+| `payment_pending` | No | No | SB-5 — Billing call in flight | Paid (§19) |
+| `payment_confirmed` | No | No | SB-5 — `billing_subscription_id` set | Paid (§19) |
+| `identity_created` | Yes | No | SB-2 post RP-1 / SB-5 post RP-2 | Both |
+| `tenant_pending` | Yes | No | SB-3 polling; O&M backstop | Both |
+| `slug_conflict` | Yes | No | SB-4 | Both |
+| `completed` | Yes | Yes | — | Both |
+| `rejected` / `failed` | No / Yes | No | — | Both |
 
 **`failed` after 15 min** in `tenant_pending` — SB-3 stops polling, alerts fire. The backstop may still recover it.
 
@@ -38,6 +48,30 @@
 12c. Failure → state=tenant_pending, return 202
 
 Total SB-2 budget: 2,500ms. SLO p99: 1.5s on no-retry path.
+
+## Paid Signup Flow (SB-5, Phase 1.5 §19)
+
+Active only when `PAID_SIGNUP_ENABLED=true`. D-2 resolved: BFF owns RP-2 and I-1, Billing only charges.
+
+1. CAPTCHA (same guard as trial, SB-INV-5)
+2. Rate limits — IncrIP + IncrEmail (same counters as trial)
+3. Validate all fields (+ `seats ≥ 1`, `payment_token` non-empty)
+4. Hash password PBKDF2-SHA512 (SB-INV-2)
+5. Allocate handoff (type=`paid`, state=`payment_pending`)
+6. Billing.AuthorizeAndCharge `{tenant_id, payment_token, plan, seats}` → `billing_subscription_id`
+   (idempotency key: `charge:<tenant_id>`)
+7. Handoff state = `payment_confirmed`
+8. PUB-1 slug pre-check (fail-open, same as trial)
+9. RP-2 provision-direct `{tenant_id, plan, billing_subscription_id, admin credentials}`
+   → `keycloak_user_id` (Idempotency-Key: `signup:<tenant_id>:rp2`)
+10. Handoff state = `identity_created`
+11. I-1 → O&M (same inline retry logic as trial)
+12a. Success → state=`completed`, return `201`
+12b. Slug conflict → state=`slug_conflict`, return `409 slug_taken`
+12c. Failure → state=`tenant_pending`, return `202` (SB-3 polling, same as trial)
+
+**No eligibility check** on the paid path — eligibility (CR-4) is trial-only.
+**Billing failure** → handoff deleted; user can retry. No charge if Billing errors.
 
 ## Resubmit Matrix (G-1, LLD §5.4)
 

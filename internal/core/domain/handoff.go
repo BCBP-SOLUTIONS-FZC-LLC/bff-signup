@@ -6,32 +6,44 @@ import "time"
 type HandoffState string
 
 const (
-	StateAllocated       HandoffState = "allocated"
-	StateIdentityCreated HandoffState = "identity_created"
-	StateTenantPending   HandoffState = "tenant_pending"
-	StateSlugConflict    HandoffState = "slug_conflict"
-	StateCompleted       HandoffState = "completed"
-	StateRejected        HandoffState = "rejected"
-	StateFailed          HandoffState = "failed"
+	StateAllocated        HandoffState = "allocated"
+	StatePaymentPending   HandoffState = "payment_pending"   // Phase 1.5 (LLD §19): Billing call in flight
+	StatePaymentConfirmed HandoffState = "payment_confirmed" // Phase 1.5 (LLD §19): billing_subscription_id obtained
+	StateIdentityCreated  HandoffState = "identity_created"
+	StateTenantPending    HandoffState = "tenant_pending"
+	StateSlugConflict     HandoffState = "slug_conflict"
+	StateCompleted        HandoffState = "completed"
+	StateRejected         HandoffState = "rejected"
+	StateFailed           HandoffState = "failed"
+)
+
+// SignupType distinguishes trial from direct-paid signup paths (Phase 1.5, LLD §19).
+type SignupType string
+
+const (
+	SignupTypeTrial SignupType = "trial"
+	SignupTypePaid  SignupType = "paid"
 )
 
 // Handoff is the ephemeral provisioning record stored in Valkey (LLD §4.2).
 // It never holds the plain password, hashed seed, admin email, or CAPTCHA token.
 type Handoff struct {
-	SignupID       string       `json:"signup_id"` // ULID
-	TenantID       string       `json:"tenant_id"` // UUIDv7
-	State          HandoffState `json:"state"`
-	Slug           string       `json:"slug"`
-	CompanyName    string       `json:"company_name"`
-	Plan           Plan         `json:"plan"`
-	DefaultLocale  string       `json:"default_locale"`
-	AdminEmailHMAC string       `json:"admin_email_hmac"` // HMAC-SHA256 of lower(email)
-	KeycloakUserID string       `json:"keycloak_user_id,omitempty"`
-	SlugAttempts   int          `json:"slug_attempts"`
-	I1Attempts     int          `json:"i1_attempts"`
-	LastError      string       `json:"last_error,omitempty"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
+	SignupID              string       `json:"signup_id"` // ULID
+	TenantID              string       `json:"tenant_id"` // UUIDv7
+	Type                  SignupType   `json:"type"`      // "trial" | "paid"
+	State                 HandoffState `json:"state"`
+	Slug                  string       `json:"slug"`
+	CompanyName           string       `json:"company_name"`
+	Plan                  Plan         `json:"plan"`
+	DefaultLocale         string       `json:"default_locale"`
+	AdminEmailHMAC        string       `json:"admin_email_hmac"` // HMAC-SHA256 of lower(email)
+	KeycloakUserID        string       `json:"keycloak_user_id,omitempty"`
+	BillingSubscriptionID string       `json:"billing_subscription_id,omitempty"` // Phase 1.5 (LLD §19)
+	SlugAttempts          int          `json:"slug_attempts"`
+	I1Attempts            int          `json:"i1_attempts"`
+	LastError             string       `json:"last_error,omitempty"`
+	CreatedAt             time.Time    `json:"created_at"`
+	UpdatedAt             time.Time    `json:"updated_at"`
 }
 
 // IsTerminal returns true if the state has no further transitions.

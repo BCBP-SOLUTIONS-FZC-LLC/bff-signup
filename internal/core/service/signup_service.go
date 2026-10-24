@@ -310,7 +310,13 @@ func (s *SignupService) validate(in SignupInput) error {
 }
 
 func (s *SignupService) emailHMAC(email string) string {
-	mac := hmac.New(sha256.New, s.hmacKey)
+	return emailHMAC(email, s.hmacKey)
+}
+
+// emailHMAC computes HMAC-SHA256 of the lower-cased email (SB-INV-2 / LLD §4.2).
+// The key is SBFF_HMAC_KEY. Used by both trial and paid signup paths.
+func emailHMAC(email string, key []byte) string {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(strings.ToLower(email)))
 	return hex.EncodeToString(mac.Sum(nil))
 }
