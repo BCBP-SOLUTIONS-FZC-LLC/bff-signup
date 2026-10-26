@@ -190,10 +190,14 @@ func NewFakeRealmProvisioner(keycloakUserID string) *FakeRealmProvisioner {
 			EmailVerificationSent: true,
 		},
 		DirectResp: &port.ProvisionDirectResponse{
-			TenantID:              "00000000-0000-0000-0000-000000000001",
-			Realm:                 keycloakUserID + "-realm",
-			KeycloakUserID:        keycloakUserID,
-			EmailVerificationSent: true,
+			TenantID:      "00000000-0000-0000-0000-000000000001",
+			Realm:         keycloakUserID + "-realm",
+			Strategy:      "dedicated",
+			KeycloakShard: "shard-0",
+			OIDCClients:   []string{"bff-signup-client"},
+			// KeycloakUserID set so tests can verify owner_user_id forwarded to I-1 (SB-INV-4).
+			// RP-2 must add this field to its real response before Phase 1.5 activates.
+			KeycloakUserID: keycloakUserID,
 		},
 	}
 }

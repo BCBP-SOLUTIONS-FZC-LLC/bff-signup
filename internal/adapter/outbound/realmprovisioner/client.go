@@ -81,6 +81,10 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 		case "OPERATION_IN_PROGRESS":
 			// Caller should retry with the same idempotency key
 			return nil, domain.NewError(domain.ErrInvalidState, "RP-1 operation in progress, retry")
+		case "REALM_ALREADY_DEDICATED":
+			return nil, domain.NewError(domain.ErrInvalidState, "tenant realm is already dedicated — trial re-provision not allowed")
+		case "TENANT_OFFBOARDED":
+			return nil, domain.NewError(domain.ErrInvalidState, "tenant has been offboarded — signup not allowed")
 		}
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("unexpected RP-1 409: %s", rpe.ErrorCode))
 
@@ -140,6 +144,10 @@ func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRe
 			return nil, domain.NewError(domain.ErrEmailUnavailable, "email already registered in Keycloak")
 		case "OPERATION_IN_PROGRESS":
 			return nil, domain.NewError(domain.ErrInvalidState, "RP-2 operation in progress, retry")
+		case "REALM_ALREADY_DEDICATED":
+			return nil, domain.NewError(domain.ErrInvalidState, "tenant realm is already dedicated")
+		case "TENANT_OFFBOARDED":
+			return nil, domain.NewError(domain.ErrInvalidState, "tenant has been offboarded — signup not allowed")
 		}
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("unexpected RP-2 409: %s", rpe.ErrorCode))
 

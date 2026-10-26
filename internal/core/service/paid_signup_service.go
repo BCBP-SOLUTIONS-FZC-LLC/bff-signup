@@ -261,9 +261,12 @@ func (s *PaidSignupService) Submit(ctx context.Context, in PaidSignupInput) (*Pa
 	}
 
 	return &PaidSignupResult{
-		SignupID:              signupID,
-		State:                 i1Result.State,
-		EmailVerificationSent: rpResp.EmailVerificationSent,
+		SignupID: signupID,
+		State:    i1Result.State,
+		// RP-2 always sends a verification email for dedicated realms (email_verified=false
+		// on the created Keycloak user). RP-2 response does not carry this flag explicitly;
+		// hardcode true here until RP-2 adds email_verification_sent to its response body.
+		EmailVerificationSent: true,
 	}, nil
 }
 

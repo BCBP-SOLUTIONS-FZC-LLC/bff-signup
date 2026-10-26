@@ -47,12 +47,20 @@ type ProvisionDirectRequest struct {
 	TermsAcceptance       TermsAcceptance `json:"terms_acceptance"`
 }
 
-// ProvisionDirectResponse is the RP-2 201 response body.
+// ProvisionDirectResponse is the RP-2 201 response body (Phase 1.5, LLD §19).
+// RP-2 provisions a dedicated Keycloak realm; it does NOT return keycloak_user_id
+// in its current response shape (ProvisionDirectResult in RP provisioning_service.go).
+// Before Phase 1.5 activates, RP-2 must be updated to include keycloak_user_id so the
+// BFF can forward it to I-1 as owner_user_id (SB-INV-4).
 type ProvisionDirectResponse struct {
-	TenantID              string `json:"tenant_id"`
-	Realm                 string `json:"realm"`
-	KeycloakUserID        string `json:"keycloak_user_id"`
-	EmailVerificationSent bool   `json:"email_verification_sent"`
+	TenantID      string   `json:"tenant_id"`
+	Realm         string   `json:"realm"`
+	Strategy      string   `json:"strategy"`       // "dedicated"
+	KeycloakShard string   `json:"keycloak_shard"` // shard hosting the dedicated realm
+	OIDCClients   []string `json:"oidc_clients"`   // registered OIDC client IDs
+	// KeycloakUserID is required by I-1 (owner_user_id) but not yet returned by RP-2.
+	// RP-2 must add this field before Phase 1.5 activation.
+	KeycloakUserID string `json:"keycloak_user_id"`
 }
 
 // RealmProvisioner is the port for RP-1 and RP-2 (LLD §5.6, §18.1, §19).
