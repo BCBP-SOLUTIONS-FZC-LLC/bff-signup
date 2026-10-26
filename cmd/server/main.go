@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 
@@ -18,22 +18,76 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/logger"
 )
+
+// buildVersion is injected at build time via -ldflags (see Makefile / Dockerfile).
+var buildVersion = "dev"
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("startup: %v", err)
+		fmt.Fprintf(os.Stderr, "startup: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func run() error {
-	// ── 1. Config (fail-fast before any connections) ──────────────────────────
+	appEnv := resolveAppEnv()
+
+	if !isDevLikeAppEnv(appEnv) {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	// ── 1. Logger — structured Zap via platform-gincommon ────────────────────
+	// All logs go through gincommon's sink: consistent JSON in prod, human-
+	// readable in dev/test. Never use the standard library log package after
+	// this point — it bypasses the OTel trace-ID injection and sampling.
+	log, err := logger.NewLogger(loggerEnv(appEnv))
+	if err != nil {
+		return fmt.Errorf("init logger: %w", err)
+	}
+
+	// ── 2. Config (fail-fast before any connections) ──────────────────────────
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	// ── 2. Valkey connection ──────────────────────────────────────────────────
+	// ── 3. Platform observability — tracing + metrics ─────────────────────────
+	ginCfg := gincommon.Config{
+		Logger:       log,
+		ServiceName:  "bff-signup",
+		BuildVersion: buildVersion,
+		Domain:       "bff",
+		Environment:  appEnv,
+		// RequestTimeout is the hard per-request deadline enforced by
+		// gincommon's TimeoutMiddleware (innermost in ObservabilityMiddlewares).
+		// It matches the config value so metrics, the access log and the server
+		// span all record the same timeout the caller receives.
+		RequestTimeout: time.Duration(cfg.RequestDeadlineMs) * time.Millisecond,
+	}
+
+	// Install gincommon's TracerProvider so every request gets a valid trace ID
+	// even when OTEL_EXPORTER_OTLP_ENDPOINT is unset (dev). Uses the same
+	// identity triple (domain, service, environment) as metrics.
+	shutdownTracing, err := gincommon.InitTracingWithConfig(gincommon.TracingConfig{
+		ServiceName:  ginCfg.ServiceName,
+		BuildVersion: ginCfg.BuildVersion,
+		Domain:       ginCfg.Domain,
+		Environment:  ginCfg.Environment,
+		Logger:       log,
+	})
+	if err != nil {
+		return fmt.Errorf("init tracing: %w", err)
+	}
+
+	// Initialise gincommon's metrics registry once before the router so all
+	// signup_bff_* collectors share the same {domain, service, environment}
+	// const labels. NewRouter applies the same middleware slice to the engine.
+	_ = gincommon.ObservabilityMiddlewares(ginCfg)
+
+	// ── 4. Valkey connection ──────────────────────────────────────────────────
 	rdb, err := buildValkeyClient(cfg.ValkeyURL)
 	if err != nil {
 		return fmt.Errorf("valkey URL: %w", err)
@@ -44,10 +98,10 @@ func run() error {
 		return fmt.Errorf("valkey ping: %w", err)
 	}
 
-	// ── 3. Valkey store adapters (wiring.go) ──────────────────────────────────
+	// ── 5. Valkey store adapters (wiring.go) ──────────────────────────────────
 	sessionStore, handoffStore, rateLimiter := buildValkeyStores(rdb)
 
-	// ── 4. Outbound HTTP adapters (wiring.go) ─────────────────────────────────
+	// ── 6. Outbound HTTP adapters (wiring.go) ─────────────────────────────────
 	rp := buildRealmProvisioner(cfg)
 	om := buildOrgMembership(cfg)
 	captchaVerifier := buildTurnstile(cfg)
@@ -55,7 +109,7 @@ func run() error {
 	catalogClient := buildCatalog(cfg)
 	billingClient := buildBilling(cfg) // Phase 1.5: stub unless PAID_SIGNUP_ENABLED=true
 
-	// ── 5. Services ───────────────────────────────────────────────────────────
+	// ── 7. Services ───────────────────────────────────────────────────────────
 	clk := port.RealClock{}
 	idgen := &defaultIDGen{}
 
@@ -75,7 +129,7 @@ func run() error {
 	)
 	statusSvc := service.NewStatusService(handoffStore, rateLimiter, orchestrator, clk, cfg.ReservedSlugs)
 
-	// ── 6. HTTP handlers and router ───────────────────────────────────────────
+	// ── 8. HTTP handlers and router ───────────────────────────────────────────
 	handlers := httpadapter.NewHandlers(
 		sessionSvc, signupSvc, paidSignupSvc, statusSvc,
 		catalogClient,
@@ -86,15 +140,34 @@ func run() error {
 		cfg.CurrentTermsVersion,
 	)
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
+		GinConfig:         ginCfg,
 		Handlers:          handlers,
 		SessionService:    sessionSvc,
 		Valkey:            handoffStore,
 		PublicHost:        cfg.PublicHost,
-		DocsEnabled:       cfg.AppEnv != "prod",
+		DocsEnabled:       isDevLikeAppEnv(appEnv),
 		PaidSignupEnabled: cfg.PaidSignupEnabled,
 	})
 
-	// ── 7. HTTP server ────────────────────────────────────────────────────────
+	// ── 9. Metrics server (port 9090 — monitoring namespace only) ────────────
+	// A dedicated mux on METRICS_PORT exposes /metrics so it is never reachable
+	// from the public internet (Istio NetworkPolicy restricts :9090 to the
+	// monitoring namespace). Matches the platform standard (LLD §11, BFF HLD §11).
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", gincommon.MetricsHandler())
+	metricsSrv := &http.Server{
+		Addr:        ":" + cfg.MetricsPort,
+		Handler:     metricsMux,
+		ReadTimeout: 5 * time.Second,
+		IdleTimeout: 30 * time.Second,
+	}
+	go func() {
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("metrics server error", map[string]interface{}{"err": err.Error()})
+		}
+	}()
+
+	// ── 10. API server ────────────────────────────────────────────────────────
 	srv := &http.Server{
 		Addr:         ":" + cfg.AppPort,
 		Handler:      router,
@@ -103,13 +176,16 @@ func run() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// ── 8. Graceful shutdown ──────────────────────────────────────────────────
+	// ── 11. Graceful shutdown ─────────────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("bff-signup listening on :%s (env=%s)", cfg.AppPort, cfg.AppEnv)
+		log.Info("bff-signup starting", map[string]interface{}{
+			"port": cfg.AppPort,
+			"env":  appEnv,
+		})
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
@@ -119,18 +195,26 @@ func run() error {
 	case err := <-errCh:
 		return fmt.Errorf("server: %w", err)
 	case sig := <-quit:
-		log.Printf("shutting down (signal=%s)", sig)
+		log.Info("shutting down", map[string]interface{}{"signal": sig.String()})
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("server shutdown: %v", err)
+		log.Error("api server shutdown", map[string]interface{}{"err": err.Error()})
+	}
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		log.Error("metrics server shutdown", map[string]interface{}{"err": err.Error()})
 	}
 	if err := rdb.Close(); err != nil {
-		log.Printf("valkey close: %v", err)
+		log.Error("valkey close", map[string]interface{}{"err": err.Error()})
 	}
-	log.Println("shutdown complete")
+	shutdownTracing()
+	if err := gincommon.Shutdown(log); err != nil {
+		log.Error("gincommon shutdown", map[string]interface{}{"err": err.Error()})
+	}
+	log.Info("shutdown complete", nil)
 	return nil
 }
 

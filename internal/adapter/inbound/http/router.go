@@ -14,10 +14,12 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/inbound/http/middleware"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 )
 
 // RouterConfig holds all router dependencies (LLD §3, §13.1).
 type RouterConfig struct {
+	GinConfig         gincommon.Config // platform observability identity (metrics, logs, traces)
 	Handlers          *Handlers
 	SessionService    *service.SessionService
 	Valkey            port.HandoffStore // used as a pinger for /readyz
@@ -30,8 +32,13 @@ type RouterConfig struct {
 func NewRouter(cfg RouterConfig) *gin.Engine {
 	r := gin.New()
 
-	// ── Infrastructure middleware (all routes) ────────────────────────────────
-	r.Use(gin.Recovery())
+	// ── Platform observability middleware (metrics, structured logging, tracing) ─
+	// ObservabilityMiddlewares provides: PanicRecovery, RequestID, Tracing,
+	// CorrelationHeaders, Metrics, Logging, and TimeoutMiddleware (innermost).
+	// Must run before any BFF-specific middleware so every request is observed.
+	r.Use(gincommon.ObservabilityMiddlewares(cfg.GinConfig)...)
+
+	// ── BFF-specific infrastructure middleware ────────────────────────────────
 	r.Use(noStoreHeaders())
 	r.Use(middleware.ClientIP())
 	r.Use(middleware.SessionCookie())
