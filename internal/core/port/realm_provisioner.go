@@ -58,8 +58,8 @@ type ProvisionDirectResponse struct {
 	Strategy      string   `json:"strategy"`       // "dedicated"
 	KeycloakShard string   `json:"keycloak_shard"` // shard hosting the dedicated realm
 	OIDCClients   []string `json:"oidc_clients"`   // registered OIDC client IDs
-	// KeycloakUserID is required by I-1 (owner_user_id) but not yet returned by RP-2.
-	// RP-2 must add this field before Phase 1.5 activation.
+	// KeycloakUserID is the admin user created in the dedicated realm.
+	// Required by I-1 as owner_user_id (SB-INV-4). Returned by RP-2.
 	KeycloakUserID string `json:"keycloak_user_id"`
 }
 
