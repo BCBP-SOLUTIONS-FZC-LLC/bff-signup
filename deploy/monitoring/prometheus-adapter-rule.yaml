@@ -1,0 +1,33 @@
+# Prometheus Adapter ConfigMap — maps Prometheus metrics to the Custom Metrics API
+# so the HPA can scale on signup_bff_request rate (CPU-bound PBKDF2 hashing, LLD §13.1).
+#
+# Deploy into the namespace where prometheus-adapter runs (typically observability).
+# Merge with any existing prometheus-adapter ConfigMap rather than replacing it.
+#
+# After applying, verify:
+#   kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq '.resources[].name' | grep rps
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-config-bff-signup
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: prometheus-adapter
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: bff-signup
+  annotations:
+    observability.platform/metric-status: proposed
+data:
+  config.yaml: |
+    rules:
+      - seriesQuery: 'signup_bff_request_duration_seconds_count{namespace!="",pod!=""}'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+        name:
+          matches: "signup_bff_request_duration_seconds_count"
+          as: "signup_bff_requests_per_second"
+        metricsQuery: |
+          sum(rate(signup_bff_request_duration_seconds_count{<<.LabelMatchers>>}[2m]))
+          by (<<.GroupBy>>)
