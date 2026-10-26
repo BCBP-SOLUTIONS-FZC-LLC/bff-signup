@@ -39,6 +39,7 @@ type Handoff struct {
 	AdminEmailHMAC        string       `json:"admin_email_hmac"` // HMAC-SHA256 of lower(email)
 	KeycloakUserID        string       `json:"keycloak_user_id,omitempty"`
 	BillingSubscriptionID string       `json:"billing_subscription_id,omitempty"` // Phase 1.5 (LLD §19)
+	LicensedSeats         int          `json:"licensed_seats,omitempty"`          // 0 for trial; seat count for paid (I-1)
 	SlugAttempts          int          `json:"slug_attempts"`
 	I1Attempts            int          `json:"i1_attempts"`
 	LastError             string       `json:"last_error,omitempty"`

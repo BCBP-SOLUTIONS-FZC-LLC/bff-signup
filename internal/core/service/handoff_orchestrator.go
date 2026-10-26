@@ -214,6 +214,7 @@ func (o *HandoffOrchestrator) callI1Once(ctx context.Context, h *domain.Handoff)
 		Plan:          string(h.Plan),
 		OwnerUserID:   h.KeycloakUserID,
 		DefaultLocale: h.DefaultLocale,
+		LicensedSeats: h.LicensedSeats,
 	}
 	resp, err := o.om.ProvisionTenant(ctx, req)
 	if err != nil {

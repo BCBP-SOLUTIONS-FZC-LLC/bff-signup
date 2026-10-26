@@ -152,6 +152,7 @@ func (s *PaidSignupService) Submit(ctx context.Context, in PaidSignupInput) (*Pa
 		Plan:           in.Plan,
 		DefaultLocale:  in.DefaultLocale,
 		AdminEmailHMAC: emailHMAC,
+		LicensedSeats:  in.Seats,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}

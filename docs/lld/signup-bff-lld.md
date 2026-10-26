@@ -7,9 +7,9 @@
 | Document type | Low-Level Design (LLD) |
 | Service | `bff-signup` (Signup Service / "Signup BFF") |
 | Repository / Go module | `BCBP-SOLUTIONS-FZC-LLC/bff-signup` → `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup` (BFF-6, decided) |
-| Status | **Ready for staging deploy** — all go-live blockers cleared (23 Oct 2026). Backstop fully functional end-to-end. Remaining open: SRE prod-deployment (BFF-1/2/4), on-call setup (BFF-6), IAM confirmations (N-3, N-10), and two non-blocking RP items (RP-2, RP-3). |
-| Version | 0.8 |
-| Date | 2026-10-23 |
+| Status | **Ready for staging deploy** — all go-live blockers cleared (23 Oct 2026). Backstop fully functional end-to-end. **Deferred to future phases:** on-call/PagerDuty setup (BFF-6, pending procurement), Keycloak existing-realm policy sweep (N-10a, pending Keycloak phase), direct-paid signup / Phase 1.5 (pending Billing service), all SRE infra provisioning (BFF-1/2/4, pending infra phase). |
+| Version | 0.9 |
+| Date | 2026-10-26 |
 | Base HLD | `bff-hld-tender-saas-v1.0.md` (Edge / BFF Tier HLD v1.0) + *Signup BFF — TL Responses: HLD Gaps (BFF-1 to BFF-6)*, 21 Oct 2026 |
 | Scope | **Phase 1 — trial signup only** (BFF HLD §7.1, §15). Direct-paid signup (Phase 1.5) is reserved, not specified (§19) |
 | Sibling LLDs | `iam-lld-realm-provisioner-service.md` **rev 1.37** (RP-1 callee; payload expanded), `iam-lld-org-membership-service.md` **rev 2.33** (I-1 + PUB-1 callee; backstop live) |
@@ -23,6 +23,7 @@
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.9 | 2026-10-26 | **Deferred items marked.** Four items formally deferred to future phases after cross-service gap review (BFF + O&M + RP): (1) BFF-6 on-call / PagerDuty — deferred until PagerDuty procured; (2) N-10a Keycloak existing-realm policy sweep — deferred to Keycloak phase; (3) Phase 1.5 direct-paid signup — deferred until Billing service is built; (4) SRE infra gaps (BFF-1/2/4) — deferred to infra phase. §16.1 and §16.2 updated with DEFERRED labels and reasons. §19 updated with deferred activation note. BFF code fixes applied: `x-tenant-roles: iam-system` header added to I-1 and eligibility calls; `licensed_seats` field added to `ProvisionTenantRequest`, `Handoff`, and `callI1Once`; paid signup handoff wires `LicensedSeats` from `in.Seats`. |
 | 0.8 | 2026-10-23 | **All go-live blockers cleared; backstop fully functional.** RP-1: `TrialTenantProvisionedPayload` expanded — `KeycloakUserID` renamed to `OwnerUserID`, `Slug`/`Name`/`Plan` added (`event.go:69–75`, `provisioning_service.go:403`); schema and AsyncAPI spec updated. RP-4: `validPlan()` wired into RP-1 handler (one line). O&M rev 2.33: `TrialTenantProvisioned` handler activated as backstop with three idempotency layers (processOnce dedup, tenantExists check, ON CONFLICT); `iam_org_membership_tenant_provisioning_backstop_total` metric live; `IAMSignupProvisioningRejected` alert added; docs corrected (BFF produces zero events). BFF: terms version validation tightened — `TermsVersion` now checked against `CurrentTermsVersion`; SB-1 response now includes `current_terms_version` so browser knows which version to echo back. §7 event table updated (payload now live). §9.4 backstop status updated from "pending" to "live". §18.1 and §18.2 stale "open" notes cleared. Sibling LLD versions: RP rev 1.37, O&M rev 2.33. |
 | 0.7 | 2026-10-23 | **IAM reply (A-1…A-4) applied; BFF code gaps closed.** Sibling LLD versions updated: RP rev 1.31 → 1.37, O&M rev 2.30 → 2.38. A-1: pod-level SPIFFE admission corrected on both O&M and RP (PR #33/#27); §10.1 table updated. A-2: `gateway` removed from RP `existingCallerNamespaces` (PR #28). A-3 (BFF-2a): PUB-1 server-side slug pre-check implemented (`CheckSlugFree` in `orgmembership/client.go`, called in `handoff_orchestrator.go` before RP-1); §5.6 step table and §8.1 sequence diagram updated; §9.4 "Remaining open" note removed. A-4 (N-5): `terms_acceptance` added to `port.ProvisionTrialRequest` and sent on every RP-1 call (`version`, `accepted_at`, `ip_address`, `user_agent` ≤512 bytes); §5.6 RP-1 request body updated; §18.1 updated. N-7: `handoffs.Get` error in `signup_service.go` no longer silently ignored. N-11 (timeout budget): `runOp` 50 ms Valkey op deadline + 1 retry; 2,500 ms SB-2 `context.WithTimeout` in `SubmitTrial` handler. N-8/N-9 confirmed already implemented. N-2/N-4 closed. §16 restructured: open = SRE prod tasks + BFF-6 + N-3/N-10; resolved = all else. |
 | 0.6 | 2026-10-22 | **Pre-coding final pass.** Sibling LLD versions updated: RP rev 1.29 → 1.31, O&M rev 2.28 → 2.30. §5.6 eligibility response corrected — not-eligible is `409 errorCode: TRIAL_ALREADY_USED` (RFC 9457), not `{eligible:false}`. §17 intro updated: O&M now also returns RFC 9457 (rev 2.29+). §17.2 upstream error codes updated to `UPPER_SNAKE_CASE` RFC 9457 format for both RP and O&M. §8.1 G-3 note updated — N-12 resolved (I-8 → 404 → AuthZ → 403). N-12 closed in §16.2. §20.2 references updated. Pending TL decisions (A-1 to A-4) tracked in `signup-bff-open-questions-tl.md`. |
@@ -870,7 +871,7 @@ JSON logs with `request_id`, `trace_id`, `signup_id`, `tenant_id`, `state`, `sta
 | Valkey down | readiness failing on all pods | Web / growth + SRE |
 | SLO burn | 2% of monthly error budget in 1 h | Web / growth |
 
-**On-call is open (BFF-6).** The routes above assume web / growth primary with IAM escalation; this must be confirmed with names before go-live, or the alerts page nobody.
+**On-call is deferred (BFF-6).** Alert infra is wired and ready (`team: web-growth`, runbooks linked). PagerDuty/OpsGenie service creation and L1 owner naming are deferred until PagerDuty is procured. See §16.1.
 
 ---
 
@@ -1085,43 +1086,43 @@ The BFF is not part of the platform's backup or realm-export procedures.
 
 ## 16. Open Questions Register
 
-Status as of 23 Oct 2026 (v0.8). All go-live blockers cleared. BFF code complete. Backstop fully functional.
+Status as of 26 Oct 2026 (v0.9). All go-live blockers cleared. BFF code complete. Backstop fully functional.
+Four items formally deferred to future phases — see DEFERRED labels below.
 
 ---
 
-### 16.1 Still open
+### 16.1 Still open / Deferred
 
 All items here require action from the responsible service team. BFF code needs no changes for any of these.
-Items marked **🔴 Needs TL Discussion** require a TL decision before they can be closed. See decision table below.
 
-| Gap ID | Gap | Responsible Service | Files | Blocks go-live? | Needs TL Discussion? |
+| Gap ID | Gap | Responsible Service | Files | Blocks go-live? | Status |
 |---|---|---|---|---|---|
-| **BFF-6** | On-call rotation not set up. No one is paged if `signup.bcbpsolutions.com` goes down. Steps: (1) TL names primary BFF owner; (2) get IAM escalation contact; (3) create `bff-signup` service in PagerDuty/OpsGenie L1→L2; (4) wire `IAMSignupProvisioningRejected` + BFF 5xx alerts; (5) link §9.4 runbook. | **Web / Growth** | PagerDuty / OpsGenie config | **Yes** | 🔴 **Yes — D-1** |
-| **BFF-RP2** | RP-2 caller conflict. IAM HLD §10.7 says Billing calls RP-2 (`provision-direct`). BFF LLD says BFF calls it. Only the BFF is admitted today. If Billing also calls RP-2 with no IAM rule, Billing's call is denied by Istio — direct-paid signup fails silently on day one of Phase 1.5. | **Signup BFF + Billing + IAM** | IAM chart `bffCaller` config | Yes (Phase 1.5) | 🔴 **Yes — D-2** |
-| **N-10a** | RP-8 sweep for existing trial realms — runbook written (`docs/runbook.md §10`): staging first → Keycloak verification → production run → rollback position. **Team executes when ready.** 21/21 packages pass. | **Realm Provisioner** | `docs/runbook.md §10` | No | No — execute when ready |
+| **BFF-6** | On-call rotation not set up. No one is paged if `signup.bcbpsolutions.com` goes down. Steps: (1) TL names primary BFF owner; (2) get IAM escalation contact; (3) create `bff-signup` service in PagerDuty/OpsGenie L1→L2; (4) wire `IAMSignupProvisioningRejected` + BFF 5xx alerts; (5) link §9.4 runbook. Alert infra already coded and ready to route. | **Web / Growth** | PagerDuty / OpsGenie config | **Yes** | 🟡 **DEFERRED — pending PagerDuty procurement. Pick up when the service is purchased.** |
+| **BFF-RP2** | RP-2 caller conflict. IAM HLD §10.7 says Billing calls RP-2 (`provision-direct`). BFF LLD and RP auth policy say BFF calls it (only the BFF SPIFFE principal is admitted today). Resolution: IAM HLD §10.7 and §4.2 diagram need updating to reflect BFF-as-caller, which is the majority narrative in both HLDs. | **Signup BFF + Billing + IAM** | IAM HLD §10.7, §4.2 | Phase 1.5 only | 🟡 **DEFERRED — action when Phase 1.5 (paid signup) is activated. IAM to correct §10.7 at that time.** |
+| **N-10a** | RP-8 sweep for existing trial realms — runbook written (`docs/runbook.md §10`): staging first → Keycloak verification → production run → rollback position. New realms already have the correct policy (N-10 closed). Sweep only needed for realms created before the fix. | **Realm Provisioner** | `docs/runbook.md §10` | No | 🟡 **DEFERRED — pick up during Keycloak maintenance phase. Not a go-live blocker.** |
 
 ---
 
-#### TL decisions required (from `docs/lld/Gaps/2026-10-23-tl-discussion.md`)
+#### TL decisions
 
-| Decision ID | Decision | Who | Impact if not made |
+| Decision ID | Decision | Who | Status |
 |---|---|---|---|
-| **D-1** | Who is the L1 on-call owner for `bff-signup`? Name the engineer or rotation who picks up the page first when signup is down. | Web/Growth TL | BFF-6 cannot be closed. Signup outages go unnoticed. `IAMSignupProvisioningRejected` alert has nowhere to route. |
-| **D-2** | Does the BFF or Billing (or both) call RP-2 for direct-paid signup? | Web/Growth TL + Billing lead + IAM | If wrong party is admitted to RP-2, Phase 1.5 silently fails on day one. IAM needs the answer to plan the chart change. |
-| **D-3** | Raise SRE ticket for BFF-4 SRE infra now? (DNS, WAF, cert — long lead time.) | Web/Growth TL → SRE | If ticket is not raised early, infra will not be ready when code is ready to deploy. |
+| **D-1** | Who is the L1 on-call owner for `bff-signup`? | Web/Growth TL | 🟡 **Deferred — pending PagerDuty procurement (BFF-6)** |
+| **D-2** | Does the BFF or Billing (or both) call RP-2 for direct-paid signup? | Web/Growth TL + Billing lead + IAM | 🟡 **Deferred — action at Phase 1.5 activation. RP auth policy already enforces BFF-only.** |
+| **D-3** | Raise SRE ticket for BFF-4 SRE infra now? (DNS, WAF, cert — long lead time.) | Web/Growth TL → SRE | 🟡 **Deferred — raise ticket when infra phase begins (see §16.2)** |
 
 ---
 
 ### 16.2 Infra gaps
 
-Prod-deployment tasks only. No BFF code changes. SRE executes these when moving to staging or production.
-**🔴 D-3 (TL decision):** TL to raise SRE ticket for BFF-4 SRE now — DNS, WAF, and cert provisioning have long lead times.
+🟡 **ALL ITEMS IN THIS SECTION ARE DEFERRED TO THE INFRA PHASE.**
+No BFF code changes required. SRE executes these when the infra phase begins (before prod deploy).
 
-| Gap ID | Gap | What closes it | Owner | Blocks go-live? |
+| Gap ID | Gap | What closes it | Owner | Blocks prod deploy? |
 |---|---|---|---|---|
-| **BFF-4 SRE** | `signup.bcbpsolutions.com` public endpoint not provisioned. Service unreachable from internet until this is done. Longest lead time of the three. | SRE provisions: DNS A/CNAME → ALB, ACM TLS cert, AWS WAF managed rules + IP reputation list, Envoy HTTPRoute (no `jwt_authn`/`ext_authz`), Istio sidecar injection + mTLS in `bff` namespace, `ServiceEntry` for Turnstile if mesh runs `REGISTRY_ONLY`. | SRE | **Yes** |
-| **BFF-2 SRE** | SNS subscription filter for `tenant-orgm-q` not verified in all envs. `TrialTenantProvisioned` must be in the filter or the O&M backstop never receives the event and the backstop is dead. | SRE confirms `TrialTenantProvisioned` in filter for dev / staging / prod. Verify via `iam_org_membership_tenant_provisioning_backstop_total` metric > 0 after test signup. | SRE | **Yes** |
-| **BFF-1 value** | Prod SPIFFE mesh trust domain not confirmed. BFF and IAM charts assume `cluster.local`. If prod differs, `bffCaller.istio.trustDomain` must be updated in RP `values-prod.yaml` and BFF Helm chart — otherwise every RP-1 and I-1 call fails with `403 forbidden_peer`. | SRE confirms trust domain. If `cluster.local` confirmed, no change needed. | SRE | **Yes** |
+| **BFF-4 SRE** | `signup.bcbpsolutions.com` public endpoint not provisioned. Service unreachable from internet. Longest lead time — raise ticket early. | SRE provisions: DNS A/CNAME → ALB, ACM TLS cert, AWS WAF managed rules + IP reputation list, Envoy HTTPRoute (no `jwt_authn`/`ext_authz`), Istio sidecar injection + mTLS in `bff` namespace, `ServiceEntry` for Turnstile if mesh runs `REGISTRY_ONLY`. Then flip `ingress.enabled: true` + `gateway.name` in BFF Helm. | SRE | **Yes** |
+| **BFF-2 SRE** | SNS subscription filter for `tenant-orgm-q` not verified in all envs. `TenantIdentityProvisioned` must be in the filter or the O&M backstop never fires. | SRE adds `TenantIdentityProvisioned` to SNS subscription filter on `tenant-orgm-q` in dev / staging / prod. Verify via `iam_org_membership_tenant_provisioning_backstop_total` metric > 0 after a test signup. | SRE | **Yes** |
+| **BFF-1 value** | Prod SPIFFE mesh trust domain not confirmed. BFF and IAM charts default to `cluster.local`. If prod differs, `bffCaller.istio.trustDomain` must be updated in RP `values-prod.yaml` — otherwise every RP-1 and I-1 call fails `403 forbidden_peer`. | SRE confirms trust domain. If `cluster.local` confirmed, no change. If different, update RP `values-prod.yaml`. | SRE | **Yes** |
 
 ---
 
@@ -1285,7 +1286,16 @@ Per O&M LLD (rev 2.33): idempotent on `tenant_id`, `409 slug_already_taken` on a
 
 ## 19. Phase 1.5 Reservation — Direct-Paid Signup
 
-**Status: stub implemented (2026-10-24) — ready for Phase 1.5 activation.** D-2 resolved (Commercial Domain HLD §8.3, CD-9 closed): the BFF, not Billing, calls RP-2 and I-1 after Billing confirms the charge.
+**Status: stub implemented (2026-10-24) — activation DEFERRED until Billing service is built.**
+
+> 🟡 **DEFERRED.** Phase 1.5 will not activate until:
+> 1. The Billing service (`hld-billing-service.md`) is developed and its HTTP contract is finalised.
+> 2. The real `BillingClient` HTTP adapter replaces `BillingStub` in `wiring.go`.
+> 3. `PAID_SIGNUP_ENABLED=true` and `BILLING_BASE_URL` are set in Helm.
+>
+> All BFF-side code is complete and waiting. No BFF code changes needed when the time comes — only the adapter and config.
+
+D-2 resolved (Commercial Domain HLD §8.3, CD-9 closed): the BFF, not Billing, calls RP-2 and I-1 after Billing confirms the charge.
 
 ### Implemented as part of the Phase 1 build
 

@@ -100,6 +100,7 @@ func (c *Client) CheckEligibility(ctx context.Context, emailHash string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-user-id", systemPrincipal)
+	req.Header.Set("x-tenant-roles", "iam-system")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -137,6 +138,7 @@ func (c *Client) ProvisionTenant(ctx context.Context, req port.ProvisionTenantRe
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-tenant-id", req.TenantID)
 	httpReq.Header.Set("x-user-id", systemPrincipal)
+	httpReq.Header.Set("x-tenant-roles", "iam-system")
 	// No Idempotency-Key — O&M I-1 is idempotent by state on tenant_id (LLD §9.2)
 
 	resp, err := c.httpClient.Do(httpReq)

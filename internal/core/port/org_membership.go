@@ -10,6 +10,7 @@ type ProvisionTenantRequest struct {
 	Plan          string `json:"plan"`          // starter | pro | enterprise (never "trial")
 	OwnerUserID   string `json:"owner_user_id"` // keycloak_user_id from RP-1 (SB-INV-4)
 	DefaultLocale string `json:"default_locale"`
+	LicensedSeats int    `json:"licensed_seats"` // 0 for trial (plan-controlled); seat count for paid
 }
 
 // ProvisionTenantResponse is the I-1 201/200 response body.
