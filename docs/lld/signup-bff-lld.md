@@ -1093,23 +1093,13 @@ Four items formally deferred to future phases — see DEFERRED labels below.
 
 ### 16.1 Still open / Deferred
 
-All items here require action from the responsible service team. BFF code needs no changes for any of these.
+All items here are deferred to a future phase. BFF code needs no changes for any of these.
 
-| Gap ID | Gap | Responsible Service | Files | Blocks go-live? | Status |
-|---|---|---|---|---|---|
-| **BFF-6** | On-call rotation not set up. No one is paged if `signup.bcbpsolutions.com` goes down. Steps: (1) TL names primary BFF owner; (2) get IAM escalation contact; (3) create `bff-signup` service in PagerDuty/OpsGenie L1→L2; (4) wire `IAMSignupProvisioningRejected` + BFF 5xx alerts; (5) link §9.4 runbook. Alert infra already coded and ready to route. | **Web / Growth** | PagerDuty / OpsGenie config | **Yes** | 🟡 **DEFERRED — pending PagerDuty procurement. Pick up when the service is purchased.** |
-| **BFF-RP2** | RP-2 caller conflict. IAM HLD §10.7 says Billing calls RP-2 (`provision-direct`). BFF LLD and RP auth policy say BFF calls it (only the BFF SPIFFE principal is admitted today). Resolution: IAM HLD §10.7 and §4.2 diagram need updating to reflect BFF-as-caller, which is the majority narrative in both HLDs. | **Signup BFF + Billing + IAM** | IAM HLD §10.7, §4.2 | Phase 1.5 only | 🟡 **DEFERRED — action when Phase 1.5 (paid signup) is activated. IAM to correct §10.7 at that time.** |
-| **N-10a** | RP-8 sweep for existing trial realms — runbook written (`docs/runbook.md §10`): staging first → Keycloak verification → production run → rollback position. New realms already have the correct policy (N-10 closed). Sweep only needed for realms created before the fix. | **Realm Provisioner** | `docs/runbook.md §10` | No | 🟡 **DEFERRED — pick up during Keycloak maintenance phase. Not a go-live blocker.** |
-
----
-
-#### TL decisions
-
-| Decision ID | Decision | Who | Status |
-|---|---|---|---|
-| **D-1** | Who is the L1 on-call owner for `bff-signup`? | Web/Growth TL | 🟡 **Deferred — pending PagerDuty procurement (BFF-6)** |
-| **D-2** | Does the BFF or Billing (or both) call RP-2 for direct-paid signup? | Web/Growth TL + Billing lead + IAM | 🟡 **Deferred — action at Phase 1.5 activation. RP auth policy already enforces BFF-only.** |
-| **D-3** | Raise SRE ticket for BFF-4 SRE infra now? (DNS, WAF, cert — long lead time.) | Web/Growth TL → SRE | 🟡 **Deferred — raise ticket when infra phase begins (see §16.2)** |
+| Gap ID | Item | Responsible | When to pick up | Status |
+|---|---|---|---|---|
+| **BFF-6 / D-1** | On-call rotation not set up. Alert infra coded and ready to route. TL names L1 owner → get IAM escalation contact → create `bff-signup` service in PagerDuty/OpsGenie L1→L2 → wire `IAMSignupProvisioningRejected` + BFF 5xx alerts → link §9.4 runbook. | Web / Growth TL | When PagerDuty is procured | 🟡 **DEFERRED** |
+| **BFF-RP2 / D-2** | IAM HLD §10.7 and §4.2 diagram credit Billing as RP-2 caller — stale. BFF LLD and RP auth policy already enforce BFF-as-caller. TL confirms BFF is the caller → IAM corrects §10.7 + §4.2 diagram. | Web/Growth TL + Billing lead + IAM | When Phase 1.5 (paid signup) activates | 🟡 **DEFERRED** |
+| **N-10a** | RP-8 sweep for existing trial realms. Runbook written (`docs/runbook.md §10`). New realms already correct (N-10 closed). Sweep only needed for realms created before the fix. | Realm Provisioner | During Keycloak maintenance phase | 🟡 **DEFERRED** |
 
 ---
 
