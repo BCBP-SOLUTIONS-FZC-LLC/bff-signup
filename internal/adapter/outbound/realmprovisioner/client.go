@@ -54,6 +54,7 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-tenant-id", req.TenantID)
 	httpReq.Header.Set("x-user-id", systemPrincipal)
+	httpReq.Header.Set("x-tenant-roles", "iam-system")
 	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 
 	resp, err := c.httpClient.Do(httpReq)
@@ -114,6 +115,7 @@ func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRe
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-tenant-id", req.TenantID)
 	httpReq.Header.Set("x-user-id", systemPrincipal)
+	httpReq.Header.Set("x-tenant-roles", "iam-system")
 	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 
 	resp, err := c.httpClient.Do(httpReq)
