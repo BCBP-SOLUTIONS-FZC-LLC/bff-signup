@@ -1,9 +1,10 @@
 # Reusable workflow — quality gate.
-# fmt · tidy · vet · lint · arch-lint · vuln-check · Dockerfile pin check.
+# fmt · tidy · vet · lint · arch-lint · vuln-check · Dockerfile pin check ·
+# metric naming · Swagger staleness · Helm lint + template + kubeconform.
 # Called by ci.yml. Must pass before image push.
 name: Validate / Quality
 
-on:
+"on":
   workflow_call:
     inputs:
       ref:
@@ -22,17 +23,17 @@ jobs:
   quality:
     name: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
           token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -83,9 +84,7 @@ jobs:
         run: make vet
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+        run: make lint
 
       - name: Architecture lint
         run: bash .github/scripts/arch-lint.sh
@@ -104,3 +103,18 @@ jobs:
             exit 1
           fi
           echo "Dockerfile base images are digest-pinned."
+
+      - name: Metric naming convention check (signup_bff_ prefix)
+        run: bash .github/scripts/check-metric-naming.sh
+
+      - name: Swagger staleness check
+        run: bash .github/scripts/check-swagger-stale.sh
+
+      - name: Cache helm + kubeconform binaries
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/go/bin
+          key: helm-check-tools-${{ runner.os }}-helm3.16.3-kubeconform0.6.7
+
+      - name: Helm lint + template + kubeconform
+        run: bash .github/scripts/helm-check.sh

@@ -3,7 +3,7 @@
 # Called by ci.yml. Gates trivy and smoke.
 name: Validate / Test
 
-on:
+"on":
   workflow_call:
     inputs:
       ref:
@@ -42,14 +42,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
           token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -85,7 +85,7 @@ jobs:
         run: bash .github/scripts/coverage-gate.sh
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: coverage-report-${{ github.sha }}
@@ -94,7 +94,7 @@ jobs:
           retention-days: 30
 
       - name: Cache go-arch-lint binary
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/go/bin
           key: go-arch-lint-${{ runner.os }}-v1.15.0
