@@ -18,6 +18,10 @@ const (
 	eligibilityPath = "/api/v1/internal/trial-eligibility"
 	pub1Path        = "/api/v1/public/tenants/resolve"
 	systemPrincipal = "00000000-0000-0000-0000-0000000000a1"
+	// nilUUID is the sentinel x-tenant-id for pre-tenant calls (CR-4 eligibility).
+	// O&M's RequireAuth requires the header on all /internal/* routes even when
+	// no tenant exists yet; uuid.Nil is the documented convention (O&M router.go §444).
+	nilUUID = "00000000-0000-0000-0000-000000000000"
 )
 
 // Client implements port.OrgMembership (I-1 + trial-eligibility, LLD §5.6, §18.2).
@@ -101,6 +105,9 @@ func (c *Client) CheckEligibility(ctx context.Context, emailHash string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-user-id", systemPrincipal)
 	req.Header.Set("x-tenant-roles", "iam-system")
+	// CR-4 is pre-tenant — no real tenant_id exists yet. O&M's RequireAuth
+	// still requires the header; uuid.Nil is the documented sentinel (router.go §444).
+	req.Header.Set("x-tenant-id", nilUUID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
