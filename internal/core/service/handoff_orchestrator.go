@@ -215,6 +215,10 @@ func (o *HandoffOrchestrator) callI1Once(ctx context.Context, h *domain.Handoff)
 		OwnerUserID:   h.KeycloakUserID,
 		DefaultLocale: h.DefaultLocale,
 		LicensedSeats: h.LicensedSeats,
+		// AdminEmailHMAC carries the HMAC-SHA256 hex of lower(email). O&M writes it
+		// atomically into trial_signup_ledger inside the I-1 tx (CR-4). The backstop
+		// consumer omits it legitimately — the omitempty tag handles the empty case.
+		EmailHash: h.AdminEmailHMAC,
 	}
 	resp, err := o.om.ProvisionTenant(ctx, req)
 	if err != nil {

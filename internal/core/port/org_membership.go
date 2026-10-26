@@ -11,11 +11,16 @@ type ProvisionTenantRequest struct {
 	OwnerUserID   string `json:"owner_user_id"` // keycloak_user_id from RP-1 (SB-INV-4)
 	DefaultLocale string `json:"default_locale"`
 	LicensedSeats int    `json:"licensed_seats"` // 0 for trial (plan-controlled); seat count for paid
+	// EmailHash is the HMAC-SHA256 hex of lower(admin_email). O&M writes it atomically
+	// into trial_signup_ledger inside the I-1 transaction (CR-4). Omitempty — backstop
+	// callers (RP's TenantIdentityProvisioned consumer) legitimately omit it.
+	EmailHash string `json:"email_hash,omitempty"`
 }
 
 // ProvisionTenantResponse is the I-1 201/200 response body.
+// O&M's TenantResponse uses json tag "id" (not "tenant_id") for the tenant UUID.
 type ProvisionTenantResponse struct {
-	TenantID string `json:"tenant_id"`
+	TenantID string `json:"id"`
 }
 
 // OrgMembership is the port for I-1, trial-eligibility, and the PUB-1 slug check (LLD §5.6, §18.2).
