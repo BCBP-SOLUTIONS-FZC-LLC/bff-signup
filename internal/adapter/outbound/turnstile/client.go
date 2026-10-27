@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -54,27 +55,33 @@ func (c *Client) Verify(ctx context.Context, token, remoteIP string) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		metrics.IncCaptchaChallenged("error") // LLD §11.2
 		return domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("Turnstile unreachable: %v", err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		metrics.IncCaptchaChallenged("error")
 		return domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("Turnstile HTTP %d", resp.StatusCode))
 	}
 
 	var result siteverifyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		metrics.IncCaptchaChallenged("error")
 		return domain.NewError(domain.ErrDependencyUnavailable, "failed to decode Turnstile response")
 	}
 
 	if !result.Success {
+		metrics.IncCaptchaChallenged("fail") // LLD §11.2
 		return domain.NewError(domain.ErrCaptchaFailed, "CAPTCHA verification failed")
 	}
 
 	// Verify hostname to prevent token reuse across origins (LLD §5.6)
 	if c.expectedHostname != "" && result.Hostname != c.expectedHostname {
+		metrics.IncCaptchaChallenged("fail")
 		return domain.NewError(domain.ErrCaptchaFailed, "CAPTCHA hostname mismatch")
 	}
 
+	metrics.IncCaptchaChallenged("pass") // LLD §11.2
 	return nil
 }

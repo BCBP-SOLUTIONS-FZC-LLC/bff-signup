@@ -13,53 +13,57 @@
 # Recording rules pre-compute the SLI numerator/denominator so alert rules
 # can key off a scalar. SLIs aggregate by (domain, service, environment).
 #
-# metric_status: proposed — reads signup_bff_request_duration_seconds
-# and signup_bff_form_submitted_total / signup_bff_provisioning_succeeded_total
-# (Tier 3 service metrics, LLD §11).
+# Tier 3 metrics used here: bff_signup_provisioning_succeeded_total,
+# bff_signup_form_submitted_total (from internal/adapter/outbound/metrics/business.go).
+# SLO-1 availability reads the gincommon HTTP request duration metric; the exact
+# name is provided by platform-gincommon ObservabilityMiddlewares. This file
+# uses bff_signup_dependency_call_duration_seconds as a proxy until the gincommon
+# HTTP metric name is confirmed. Update the expr once verified.
+#
+# Note: platform_dependency_request_seconds (Tier 1, Proposed — registry.go)
+# is NOT used here until its PlatformRegistry entry flips to StatusCanonical
+# (metrics-registry-lint.sh enforces this).
 
 groups:
   # ── SLI recording ─────────────────────────────────────────────────────────
   - name: bff-signup.slo.records
     interval: 30s
     rules:
-      # Signup availability: non-5xx / total on the trial endpoint.
+      # Signup availability proxy: error rate on dependency calls (bff_signup_* Tier 3).
+      # TODO: replace with gincommon HTTP metric once exact name is confirmed.
       - record: bff:signup_availability_sli:ratio_rate_5m
         expr: |
-          sum by (domain, service, environment) (rate(signup_bff_request_duration_seconds_count{
-            service="bff-signup",
-            route="/trial",
-            code!~"5.."
-          }[5m]))
+          1 -
+          sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count{outcome="error"}[5m])
+          )
           /
-          sum by (domain, service, environment) (rate(signup_bff_request_duration_seconds_count{
-            service="bff-signup",
-            route="/trial"
-          }[5m]))
+          (sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count[5m])
+          ) + 0.001)
 
       - record: bff:signup_availability_sli:ratio_rate_1h
         expr: |
-          sum by (domain, service, environment) (rate(signup_bff_request_duration_seconds_count{
-            service="bff-signup",
-            route="/trial",
-            code!~"5.."
-          }[1h]))
+          1 -
+          sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count{outcome="error"}[1h])
+          )
           /
-          sum by (domain, service, environment) (rate(signup_bff_request_duration_seconds_count{
-            service="bff-signup",
-            route="/trial"
-          }[1h]))
+          (sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count[1h])
+          ) + 0.001)
 
       # Provisioning success: completed / submitted.
       - record: bff:provisioning_success_sli:ratio_rate_5m
         expr: |
-          sum by (domain, service, environment) (rate(signup_bff_provisioning_succeeded_total[5m]))
+          sum by (domain, service, environment) (rate(bff_signup_provisioning_succeeded_total[5m]))
           /
-          (sum by (domain, service, environment) (rate(signup_bff_form_submitted_total[5m])) + 0.001)
+          (sum by (domain, service, environment) (rate(bff_signup_form_submitted_total[5m])) + 0.001)
 
   # ── Burn-rate alerts ───────────────────────────────────────────────────────
   - name: bff-signup.slo.alerts
     rules:
-      # Fast burn: 5-minute window > 10× budget burn rate → outage in progress.
+      # Fast burn: 5-minute window > 14.4× budget burn rate → outage in progress.
       - alert: SignupSLOFastBurn
         expr: |
           (1 - bff:signup_availability_sli:ratio_rate_5m) > (14.4 * (1 - 0.999))

@@ -1,6 +1,7 @@
 # Prometheus alerting rules for the Signup BFF (bff-signup).
 #
-# All BFF metrics use the signup_bff_ prefix (Tier 3, service-specific).
+# All BFF Tier 3 metrics use the bff_signup_ prefix (standard naming:
+# <domain>_<service>_<metric> where domain=bff, service=signup).
 # Source of truth: deploy/helm/templates/prometheusrule.yaml (PrometheusRule CRD).
 # This flat file is used for non-kube-prometheus setups and for Prometheus
 # --rule-files configuration.
@@ -44,9 +45,9 @@ groups:
     rules:
       - alert: SignupProvisioningFailureRate
         expr: |
-          rate(signup_bff_provisioning_failed_total[10m])
+          rate(bff_signup_provisioning_failed_total[10m])
             /
-          (rate(signup_bff_form_submitted_total[10m]) + 0.001)
+          (rate(bff_signup_form_submitted_total[10m]) + 0.001)
           > 0.05
         for: 10m
         labels:
@@ -61,7 +62,7 @@ groups:
 
       - alert: SignupOrgMembershipLag
         expr: |
-          sum(increase(signup_bff_provisioning_failed_total{stage="org_membership",reason="exhausted"}[15m])) > 0
+          sum(increase(bff_signup_provisioning_failed_total{stage="org_membership",reason="exhausted"}[15m])) > 0
         for: 0m
         labels:
           severity: warning
@@ -75,7 +76,7 @@ groups:
 
       - alert: SignupContractError
         expr: |
-          sum(increase(signup_bff_provisioning_failed_total{reason="contract_error"}[5m])) > 0
+          sum(increase(bff_signup_provisioning_failed_total{reason="contract_error"}[5m])) > 0
         for: 0m
         labels:
           severity: critical
@@ -88,7 +89,7 @@ groups:
 
       - alert: SignupRealmProvisionerUnavailable
         expr: |
-          sum(increase(signup_bff_provisioning_failed_total{stage="realm_provisioner"}[5m])) > 10
+          sum(increase(bff_signup_provisioning_failed_total{stage="realm_provisioner"}[5m])) > 10
         for: 5m
         labels:
           severity: warning
@@ -116,9 +117,9 @@ groups:
     rules:
       - alert: SignupCaptchaErrorRate
         expr: |
-          rate(signup_bff_captcha_challenged_total{result="error"}[5m])
+          rate(bff_signup_captcha_challenged_total{result="error"}[5m])
             /
-          (rate(signup_bff_captcha_challenged_total[5m]) + 0.001)
+          (rate(bff_signup_captcha_challenged_total[5m]) + 0.001)
           > 0.05
         for: 5m
         labels:
@@ -132,14 +133,19 @@ groups:
             Check ServiceEntry for challenges.cloudflare.com:443.
 
   # ── SLO ───────────────────────────────────────────────────────────────────────
+  # SLO-1 uses the gincommon HTTP request duration metric (emitted by
+  # ObservabilityMiddlewares). The exact metric name is provided by
+  # platform-gincommon; once confirmed, replace the placeholder below.
+  # For now this references the Tier 3 bff_signup_dependency_call_duration_seconds
+  # as a proxy for SB-2 latency until the gincommon HTTP metric name is verified.
   - name: bff_signup_slo
     rules:
       - alert: SignupSLOBurn
         expr: |
           (
-            rate(signup_bff_request_duration_seconds_count{route="/trial",code=~"5.."}[1h])
+            rate(bff_signup_dependency_call_duration_seconds_count{outcome="error"}[1h])
               /
-            rate(signup_bff_request_duration_seconds_count{route="/trial"}[1h])
+            (rate(bff_signup_dependency_call_duration_seconds_count[1h]) + 0.001)
           ) > 0.02
         for: 0m
         labels:

@@ -24,9 +24,9 @@ How this service implements the platform observability standard. This page cover
 
 | Tier | Namespace | Count |
 |---|---|---|
-| Tier 3 (service-specific) | `signup_bff_` | All custom metrics |
+| Tier 3 (service-specific) | `bff_signup_` | All custom metrics |
 
-All custom metrics use the `signup_bff_` prefix (enforced by `.github/scripts/check-metric-naming.sh`).
+All custom metrics use the `bff_signup_` prefix (enforced by `.github/scripts/check-metric-naming.sh`).
 
 ## Ports
 

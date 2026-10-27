@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -50,6 +51,7 @@ func (s *SessionService) Create(ctx context.Context, clientIP string) (*SessionR
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
 	}
 	if count > maxSessionsPerIPPerHour {
+		metrics.IncRateLimited("session") // LLD §11.2
 		retryAfter := int(time.Until(resetAt).Seconds()) + 1
 		return nil, domain.NewError(domain.ErrRateLimited, "too many sessions from this IP").
 			WithDetails(map[string]any{"retry_after_seconds": retryAfter, "scope": "session"})
@@ -83,6 +85,7 @@ func (s *SessionService) Create(ctx context.Context, clientIP string) (*SessionR
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "session store unavailable")
 	}
 
+	metrics.IncFormStarted("trial") // LLD §11.2 — mode="trial" in Phase 1; "paid" in Phase 1.5
 	return &SessionResult{
 		SID:       sid,
 		SignupID:  signupID,

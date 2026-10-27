@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/base64"
+	"time"
 
 	"golang.org/x/crypto/pbkdf2"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
 
@@ -41,7 +43,9 @@ func (h *PBKDF2Hasher) Hash(password string) (*port.HashedPasswordSeed, error) {
 		return nil, err
 	}
 
+	start := time.Now()
 	dk := pbkdf2.Key([]byte(password), salt, h.iters, keyLen, sha512.New)
+	metrics.ObservePasswordHash(time.Since(start)) // LLD §11.2, §10.6
 
 	seed := &port.HashedPasswordSeed{
 		Algorithm:  algorithm,

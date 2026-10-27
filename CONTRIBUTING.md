@@ -159,7 +159,7 @@ Every PR must keep these test cases passing:
 ```bash
 make lint          # golangci-lint
 make arch-lint     # go-arch-lint layering rules
-make metrics-lint  # signup_bff_ prefix + _total/_seconds suffix check
+make metrics-lint  # bff_signup_ prefix + _total/_seconds suffix check
 ```
 
 All three run in CI. Add a package doc comment to every new package.

@@ -90,7 +90,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `.go-arch-lint.yml` — layering rules.
 - `.golangci.yml`, `.dockerignore`, `.trivyignore`, `.docker-digests`.
 - `scripts/merge_coverage.py` — merge unit + integration coverage profiles.
-- `scripts/validate-metrics.sh` — enforce `signup_bff_` prefix + `_total`/`_seconds` suffixes.
+- `scripts/validate-metrics.sh` — enforce `bff_signup_` prefix + `_total`/`_seconds` suffixes.
 - `.claude/` — `CLAUDE.md`, `key-files.md`, `api-and-events.md`, `flows-and-concurrency.md`, `development-guide.md`, `operations.md`.
 
 **Tests:**

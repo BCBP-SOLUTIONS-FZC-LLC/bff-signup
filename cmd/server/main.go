@@ -15,6 +15,8 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/inbound/http"
+	bffmetrics "github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	valkeystore "github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/valkey"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/service"
@@ -83,23 +85,26 @@ func run() error {
 	}
 
 	// Initialise gincommon's metrics registry once before the router so all
-	// signup_bff_* collectors share the same {domain, service, environment}
+	// bff_signup_* collectors share the same {domain, service, environment}
 	// const labels. NewRouter applies the same middleware slice to the engine.
 	_ = gincommon.ObservabilityMiddlewares(ginCfg)
 
-	// ── 4. Valkey connection ──────────────────────────────────────────────────
-	rdb, err := buildValkeyClient(cfg.ValkeyURL)
-	if err != nil {
-		return fmt.Errorf("valkey URL: %w", err)
-	}
+	// Register bff-signup's business metrics (LLD §11.2) after gincommon so
+	// the {domain, service, environment} identity is fixed. Mirrors the
+	// registration order used by iam-org-membership (cmd/server/main.go).
+	bffmetrics.Register(appEnv)
+
+	// ── 4. Valkey store adapters (wiring.go) ─────────────────────────────────
+	// buildValkeyStores calls valkeystore.NewClient which sets tight timeouts
+	// (100ms dial / 50ms read+write) matching iam-org-membership's pattern.
+	sessionStore, handoffStore, rateLimiter, rdb := buildValkeyStores(cfg.ValkeyURL)
+	defer func() { _ = rdb.Close() }()
+
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pingCancel()
-	if err := rdb.Ping(pingCtx).Err(); err != nil {
+	if err := valkeystore.Ping(pingCtx, rdb); err != nil {
 		return fmt.Errorf("valkey ping: %w", err)
 	}
-
-	// ── 5. Valkey store adapters (wiring.go) ──────────────────────────────────
-	sessionStore, handoffStore, rateLimiter := buildValkeyStores(rdb)
 
 	// ── 6. Outbound HTTP adapters (wiring.go) ─────────────────────────────────
 	rp := buildRealmProvisioner(cfg)

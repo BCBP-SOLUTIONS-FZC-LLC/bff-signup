@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -51,6 +52,7 @@ func (s *StatusService) GetStatus(ctx context.Context, sessionSignupID, pathSign
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
 	}
 	if count > maxPollsPerMinute {
+		metrics.IncRateLimited("poll") // LLD §11.2
 		return nil, domain.NewError(domain.ErrRateLimited, "too many status polls").
 			WithDetails(map[string]any{"retry_after_seconds": retryAfterSecs(resetAt), "scope": "poll"})
 	}
@@ -65,6 +67,7 @@ func (s *StatusService) GetStatus(ctx context.Context, sessionSignupID, pathSign
 		lockToken, acquired, _ := s.handoffs.AcquireLock(ctx, h.SignupID)
 		if acquired {
 			defer s.handoffs.ReleaseLock(ctx, h.SignupID, lockToken) //nolint:errcheck
+			metrics.IncHandoffResumed("poll")                        // LLD §11.2
 			result, err := s.orchestrator.ResumeI1(ctx, h)
 			if err == nil && result != nil {
 				h.State = result.State

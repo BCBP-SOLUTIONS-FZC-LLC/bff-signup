@@ -21,7 +21,7 @@ We use [SemVer 2.0.0](https://semver.org/): `MAJOR.MINOR.PATCH` (e.g. `v0.2.0`).
 | Session cookie name (`sbff_sid`), CSRF header name (`X-CSRF-Token`) | Cookie `Max-Age`, `Path` — tunable |
 | Required env var **names and semantics** (`.env-example`) | Env var **defaults** — tunable without a MAJOR |
 | `deploy/helm/values.yaml` top-level key names callers actually set (`image.*`, `env.*`, `service.*`, `autoscaling.*`, `existingSecret`) | Chart internals (`_helpers.tpl`, template structure) |
-| Prometheus metric **names** (`signup_bff_*`) — dashboards and alerts key off these | Metric label cardinality beyond what is documented |
+| Prometheus metric **names** (`bff_signup_*`) — dashboards and alerts key off these | Metric label cardinality beyond what is documented |
 
 ### Guarantees
 

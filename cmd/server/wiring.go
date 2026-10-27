@@ -29,26 +29,21 @@ func buildBilling(_ *config.Config) port.BillingClient {
 	return port.BillingStub{}
 }
 
-// buildValkeyClient parses the VALKEY_URL and returns a connected go-redis client.
-// Caller is responsible for calling rdb.Ping and rdb.Close.
-func buildValkeyClient(valkeyURL string) (*redis.Client, error) {
-	opts, err := redis.ParseURL(valkeyURL)
-	if err != nil {
-		return nil, err
-	}
-	return redis.NewClient(opts), nil
-}
-
 // buildValkeyStores constructs the three Valkey-backed port implementations
-// (session store, handoff store, rate limiter) from a shared client.
-func buildValkeyStores(rdb *redis.Client) (
+// from a shared client created by valkeystore.NewClient.
+// That constructor sets the standard tight timeouts (100ms dial / 50ms read+write)
+// matching the pattern used in iam-org-membership/internal/adapter/outbound/valkey.
+func buildValkeyStores(valkeyURL string) (
 	sessions port.SessionStore,
 	handoffs port.HandoffStore,
 	limiter port.RateLimiter,
+	rdb *redis.Client,
 ) {
-	return valkeystore.NewSessionStore(rdb),
-		valkeystore.NewHandoffStore(rdb),
-		valkeystore.NewRateLimiter(rdb)
+	rdb = valkeystore.NewClient(valkeyURL)
+	sessions = valkeystore.NewSessionStore(rdb)
+	handoffs = valkeystore.NewHandoffStore(rdb)
+	limiter = valkeystore.NewRateLimiter(rdb)
+	return
 }
 
 // buildRealmProvisioner constructs the RP-1 HTTP client.

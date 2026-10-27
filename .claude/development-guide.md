@@ -76,7 +76,7 @@ Integration tests use testcontainers-go to spin up a real Valkey. They do NOT mo
 
 ## Observability
 
-- Metrics: `signup_bff_*` prefix (see LLD §11.2). No label carries email, IP, or tenant id.
+- Metrics: `bff_signup_*` prefix (see LLD §11.2). No label carries email, IP, or tenant id.
 - Traces: `traceparent` propagated to Turnstile, Valkey, RP-1, I-1.
 - Logs: `request_id`, `trace_id`, `signup_id`, `tenant_id`, `state`, `stage`, `outcome`. Never log password, seed, CAPTCHA token, CSRF token, cookie, or full email.
 - Dashboard: "Signup Funnel" in Grafana — sessions → submissions → CAPTCHA pass → RP-1 success → I-1 success.
