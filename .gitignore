@@ -38,3 +38,7 @@ bin/
 
 # OS
 .DS_Store
+
+# Compiled binary at repo root (should only exist in bin/)
+server
+server-*
