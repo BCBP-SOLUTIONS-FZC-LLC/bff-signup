@@ -272,6 +272,28 @@ func (f *FakeBillingClient) AuthorizeAndCharge(_ context.Context, req port.Charg
 	return f.Resp, f.Err
 }
 
+// ── FakeCatalog ───────────────────────────────────────────────────────────────
+
+// FakeCatalog returns a fixed plan list or a scripted error.
+type FakeCatalog struct {
+	PlanList []domain.PlanInfo
+	Err      error
+}
+
+func NewFakeCatalog() *FakeCatalog {
+	return &FakeCatalog{
+		PlanList: []domain.PlanInfo{
+			{Code: domain.PlanStarter, Name: "Starter", TrialDays: 14},
+			{Code: domain.PlanPro, Name: "Pro", TrialDays: 14},
+			{Code: domain.PlanEnterprise, Name: "Enterprise", TrialDays: 14},
+		},
+	}
+}
+
+func (f *FakeCatalog) Plans(_ context.Context) ([]domain.PlanInfo, error) {
+	return f.PlanList, f.Err
+}
+
 // ── FakeClock ─────────────────────────────────────────────────────────────────
 
 // FakeClock returns a fixed time. Advance it in tests that need time progression.

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,9 +18,13 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
 
-// valkeyClient connects to the local Valkey started by docker-compose or the
-// CI service container. Reads VALKEY_URL env var (set in .env); falls back to
-// the unauthenticated local address for environments without a password.
+// valkeyClient returns a Redis client backed by:
+//  1. The real Valkey at VALKEY_URL (CI service container or 'make docker-up'), OR
+//  2. An in-process miniredis server when Valkey is not reachable.
+//
+// miniredis (same approach as iam-org-membership/internal/adapter/outbound/valkey/cache_test.go)
+// implements the Redis protocol in pure Go — no Docker required — so tests
+// always run locally without skipping.
 func valkeyClient(t *testing.T) *redis.Client {
 	t.Helper()
 	url := os.Getenv("VALKEY_URL")
@@ -29,7 +34,14 @@ func valkeyClient(t *testing.T) *redis.Client {
 	opts, err := redis.ParseURL(url)
 	require.NoError(t, err)
 	rdb := redis.NewClient(opts)
-	require.NoError(t, rdb.Ping(context.Background()).Err(), "Valkey not reachable — run 'make docker-up'")
+
+	if pingErr := rdb.Ping(context.Background()).Err(); pingErr != nil {
+		// Real Valkey unreachable — fall back to in-process miniredis.
+		_ = rdb.Close()
+		mr := miniredis.RunT(t) // stopped automatically when t ends
+		rdb = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	}
+
 	t.Cleanup(func() { _ = rdb.Close() })
 	return rdb
 }
@@ -143,4 +155,61 @@ func TestRateLimiter_IncrAndWindow(t *testing.T) {
 
 	// Cleanup
 	rdb.Del(ctx, "sbff:rl:ip:"+ip)
+}
+
+func TestRateLimiter_AllIncrMethods(t *testing.T) {
+	rdb := valkeyClient(t)
+	limiter := valkey.NewRateLimiter(rdb)
+	ctx := context.Background()
+
+	emailHMAC := "integ-test-email-hmac-001"
+	sessionIP := "integ-test-sess-ip-10.0.0.1"
+	sid := "integ-test-poll-sid-001"
+
+	rdb.Del(ctx, "sbff:rl:email:"+emailHMAC)
+	rdb.Del(ctx, "sbff:rl:sess:"+sessionIP)
+	rdb.Del(ctx, "sbff:rl:poll:"+sid)
+
+	emailCount, _, err := limiter.IncrEmail(ctx, emailHMAC)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), emailCount)
+
+	sessCount, _, err := limiter.IncrSession(ctx, sessionIP)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), sessCount)
+
+	pollCount, _, err := limiter.IncrPoll(ctx, sid)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), pollCount)
+
+	rdb.Del(ctx, "sbff:rl:email:"+emailHMAC)
+	rdb.Del(ctx, "sbff:rl:sess:"+sessionIP)
+	rdb.Del(ctx, "sbff:rl:poll:"+sid)
+}
+
+func TestPing_ReturnsNilWhenReachable(t *testing.T) {
+	rdb := valkeyClient(t)
+	err := valkey.Ping(context.Background(), rdb)
+	assert.NoError(t, err)
+}
+
+func TestSessionStore_Refresh(t *testing.T) {
+	rdb := valkeyClient(t)
+	store := valkey.NewSessionStore(rdb)
+	ctx := context.Background()
+
+	sess := &port.Session{
+		SID:       "integ-refresh-sid-001",
+		CSRFHash:  "hash",
+		SignupID:  "01JAB0000000000000000000",
+		CreatedAt: time.Now().Unix(),
+	}
+	require.NoError(t, store.Create(ctx, sess))
+	require.NoError(t, store.Refresh(ctx, sess.SID))
+
+	got, err := store.Get(ctx, sess.SID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	require.NoError(t, store.Delete(ctx, sess.SID))
 }

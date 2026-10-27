@@ -2,7 +2,9 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -136,6 +138,152 @@ func TestSubmit_InvalidPlan_Rejected(t *testing.T) {
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, domain.ErrValidationFailed, de.Cause)
+}
+
+func TestSubmit_HandoffCreateFails_ReturnsDependencyUnavailable(t *testing.T) {
+	handoffs := &errOnCreateHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
+	clk := fixtures.NewFakeClock()
+	orch := service.NewHandoffOrchestrator(handoffs,
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+	svc := service.NewSignupService(
+		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
+		orch, fixtures.NewFakeIDGenerator(), clk,
+		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
+		"2026-09",
+	)
+
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000050", CSRFHash: "h"}
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
+}
+
+func TestSubmit_LockNotAcquired_ReturnsInvalidState(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	// Pre-acquire the lock so the service can't acquire it
+	_, _, _ = handoffs.AcquireLock(context.Background(), "01JAB0000000000000000051")
+
+	clk := fixtures.NewFakeClock()
+	orch := service.NewHandoffOrchestrator(handoffs,
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+	svc := service.NewSignupService(
+		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
+		orch, fixtures.NewFakeIDGenerator(), clk,
+		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
+		"2026-09",
+	)
+
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000051", CSRFHash: "h"}
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrInvalidState, de.Cause)
+}
+
+func TestSubmit_HandoffGetFails_ReturnsDependencyUnavailable(t *testing.T) {
+	handoffs := &errOnGetHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
+	clk := fixtures.NewFakeClock()
+	orch := service.NewHandoffOrchestrator(handoffs,
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+	svc := service.NewSignupService(
+		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
+		orch, fixtures.NewFakeIDGenerator(), clk,
+		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
+		"2026-09",
+	)
+
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000052", CSRFHash: "h"}
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
+}
+
+// errOnAcquireLockStore embeds FakeHandoffStore but returns an error from AcquireLock.
+type errOnAcquireLockStore struct {
+	*fixtures.FakeHandoffStore
+}
+
+func (s *errOnAcquireLockStore) AcquireLock(_ context.Context, _ string) (string, bool, error) {
+	return "", false, errors.New("lock error")
+}
+
+func TestSubmit_AcquireLockError_ReturnsDependencyUnavailable(t *testing.T) {
+	handoffs := &errOnAcquireLockStore{fixtures.NewFakeHandoffStore()}
+	svc := newSignupServiceWithLimiter(handoffs, fixtures.NewFakeRateLimiter())
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000062", CSRFHash: "h"}
+
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
+}
+
+// errOnGetHandoffStore fails on Get.
+type errOnGetHandoffStore struct {
+	*fixtures.FakeHandoffStore
+}
+
+func (s *errOnGetHandoffStore) Get(_ context.Context, _ string) (*domain.Handoff, error) {
+	return nil, errors.New("store get error")
+}
+
+// errIPLimiter returns an error from IncrIP to test the ErrDependencyUnavailable path.
+type errIPLimiter struct{ *fixtures.FakeRateLimiter }
+
+func (l *errIPLimiter) IncrIP(_ context.Context, _ string) (int64, time.Time, error) {
+	return 0, time.Time{}, errors.New("redis down")
+}
+
+// errEmailLimiter returns an error from IncrEmail.
+type errEmailLimiter struct{ *fixtures.FakeRateLimiter }
+
+func (l *errEmailLimiter) IncrEmail(_ context.Context, _ string) (int64, time.Time, error) {
+	return 0, time.Time{}, errors.New("redis down")
+}
+
+func newSignupServiceWithLimiter(handoffs port.HandoffStore, limiter port.RateLimiter) *service.SignupService {
+	clk := fixtures.NewFakeClock()
+	idgen := fixtures.NewFakeIDGenerator()
+	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+	return service.NewSignupService(
+		handoffs, limiter, &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
+		orch, idgen, clk,
+		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}, "2026-09",
+	)
+}
+
+func TestSubmit_IncrIPError_ReturnsDependencyUnavailable(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	svc := newSignupServiceWithLimiter(handoffs, &errIPLimiter{fixtures.NewFakeRateLimiter()})
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000060", CSRFHash: "h"}
+
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
+}
+
+func TestSubmit_IncrEmailError_ReturnsDependencyUnavailable(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	svc := newSignupServiceWithLimiter(handoffs, &errEmailLimiter{fixtures.NewFakeRateLimiter()})
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000061", CSRFHash: "h"}
+
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
 }
 
 func TestSubmit_SlugConflict_ReturnsSuggestions(t *testing.T) {
