@@ -83,6 +83,18 @@ jobs:
       - name: Vet
         run: make vet
 
+      - name: Cache golangci-lint binary
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/go/bin
+          key: golangci-lint-${{ runner.os }}-v2.12.1
+
+      - name: Install golangci-lint
+        run: |
+          if ! command -v golangci-lint >/dev/null 2>&1; then
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
+          fi
+
       - name: Lint
         run: make lint
 
@@ -104,8 +116,11 @@ jobs:
           fi
           echo "Dockerfile base images are digest-pinned."
 
-      - name: Metric naming convention check (signup_bff_ prefix)
+      - name: Metric naming convention check (bff_signup_* Tier 3 + platform_* Tier 1)
         run: bash .github/scripts/check-metric-naming.sh
+
+      - name: Metrics registry lint (Proposed metrics must not be alerting/SLO sources)
+        run: bash .github/scripts/metrics-registry-lint.sh
 
       - name: Swagger staleness check
         run: bash .github/scripts/check-swagger-stale.sh

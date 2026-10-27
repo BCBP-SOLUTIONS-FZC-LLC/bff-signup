@@ -35,6 +35,12 @@ components:
   middleware:
     in: internal/adapter/inbound/http/middleware
 
+  # observability: instrumentation only. Nil-safe helpers mean callers (service,
+  # adapters_outbound) import this directly — same pattern as iam-org-membership.
+  # Collectors are nil until metrics.Register() runs, so unit tests are safe.
+  observability:
+    in: internal/adapter/outbound/metrics
+
   adapters_inbound:
     in:
       - internal/adapter/inbound/http
@@ -65,10 +71,15 @@ deps:
     mayDependOn:
       - port
 
+  # observability: instrumentation only — may not import business logic.
+  observability:
+    anyVendorDeps: true
+
   service:
     mayDependOn:
       - domain
       - port
+      - observability
 
   config:
     mayDependOn:
@@ -92,6 +103,7 @@ deps:
     mayDependOn:
       - port
       - domain
+      - observability
 
   docs_swagger:
     anyVendorDeps: true
@@ -107,3 +119,4 @@ deps:
       - adapters_outbound
       - docs_swagger
       - middleware
+      - observability

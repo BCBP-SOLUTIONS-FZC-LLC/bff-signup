@@ -11,8 +11,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=secret,id=go_private_token \
     --mount=type=cache,target=/go/pkg/mod \
-    GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/* \
-    GONOSUMDB=github.com/BCBP-SOLUTIONS-FZC-LLC/* \
+    GOPRIVATE="github.com/BCBP-SOLUTIONS-FZC-LLC/*" \
+    GONOSUMDB="github.com/BCBP-SOLUTIONS-FZC-LLC/*" \
     git config --global credential.helper store && \
     echo "https://x-access-token:$(cat /run/secrets/go_private_token)@github.com" > ~/.git-credentials && \
     chmod 600 ~/.git-credentials && \
@@ -23,8 +23,8 @@ COPY . .
 RUN --mount=type=secret,id=go_private_token \
     --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/* \
-    GONOSUMDB=github.com/BCBP-SOLUTIONS-FZC-LLC/* \
+    GOPRIVATE="github.com/BCBP-SOLUTIONS-FZC-LLC/*" \
+    GONOSUMDB="github.com/BCBP-SOLUTIONS-FZC-LLC/*" \
     CGO_ENABLED=0 GOOS=linux go build \
       -trimpath \
       -ldflags="-s -w -X main.buildVersion=${BUILD_VERSION:-dev}" \

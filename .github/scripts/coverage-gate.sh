@@ -3,7 +3,7 @@
 # bff-signup has no database layer, so 80% is the target (vs 95% for DB services).
 set -euo pipefail
 
-THRESHOLD="${COVERAGE_THRESHOLD:-80}"
+THRESHOLD="${COVERAGE_THRESHOLD:-95}"
 
 test -f coverage.out || {
   echo "::error file=coverage.out,title=Coverage gate::coverage.out missing — run 'make test-ci' before the coverage gate"

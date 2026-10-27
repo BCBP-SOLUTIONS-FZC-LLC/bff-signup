@@ -80,7 +80,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: 'true'
         run: make test-ci
 
-      - name: Coverage threshold gate (>= 80%)
+      - name: Coverage threshold gate (>= 95%)
         id: gate
         run: bash .github/scripts/coverage-gate.sh
 
