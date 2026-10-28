@@ -245,7 +245,7 @@ func TestSwaggerThemeHandler_ServesCSS(t *testing.T) {
 func TestHandleError_NonDomainError_Returns500(t *testing.T) {
 	r := gin.New()
 	r.GET("/", func(c *gin.Context) {
-		handleError(c, errors.New("plain non-domain error"))
+		HandleError(c, errors.New("plain non-domain error"))
 	})
 
 	w := httptest.NewRecorder()
@@ -258,7 +258,7 @@ func TestDomainStatus_UnknownCause_ReturnsDefault500(t *testing.T) {
 	de := domain.NewError(unknownCause, "unexpected situation")
 	r := gin.New()
 	r.GET("/", func(c *gin.Context) {
-		handleError(c, de)
+		HandleError(c, de)
 	})
 
 	w := httptest.NewRecorder()
