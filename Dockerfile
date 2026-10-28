@@ -7,7 +7,11 @@ FROM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d6
 
 WORKDIR /src
 
-# git is not included in the golang:alpine image but is required for private module auth
+# git is not included in the golang:alpine image but is required for private module auth.
+# DL3018 suppressed: the builder base image is digest-pinned (line 6), which pins the
+# apk package index and therefore the git version transitively. Separate version pinning
+# in apk add would be redundant and would break every time the base image is updated.
+# hadolint ignore=DL3018
 RUN apk add --no-cache git
 
 # Cache module downloads separately from source
