@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
+
+const maxUpstreamBodyBytes = 64 * 1024
 
 const siteverifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
@@ -53,7 +56,9 @@ func (c *Client) Verify(ctx context.Context, token, remoteIP string) error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	metrics.ObserveDependencyCall("turnstile", "siteverify", time.Since(start), resp, err)
 	if err != nil {
 		metrics.IncCaptchaChallenged("error") // LLD §11.2
 		return domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("Turnstile unreachable: %v", err))
@@ -66,7 +71,7 @@ func (c *Client) Verify(ctx context.Context, token, remoteIP string) error {
 	}
 
 	var result siteverifyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&result); err != nil {
 		metrics.IncCaptchaChallenged("error")
 		return domain.NewError(domain.ErrDependencyUnavailable, "failed to decode Turnstile response")
 	}

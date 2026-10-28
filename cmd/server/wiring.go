@@ -33,14 +33,14 @@ func buildBilling(_ *config.Config) port.BillingClient {
 // from a shared client created by valkeystore.NewClient.
 // That constructor sets the standard tight timeouts (100ms dial / 50ms read+write)
 // matching the pattern used in iam-org-membership/internal/adapter/outbound/valkey.
-func buildValkeyStores(valkeyURL string) (
+func buildValkeyStores(valkeyURL string, sessionTTL time.Duration) (
 	sessions port.SessionStore,
 	handoffs port.HandoffStore,
 	limiter port.RateLimiter,
 	rdb *redis.Client,
 ) {
 	rdb = valkeystore.NewClient(valkeyURL)
-	sessions = valkeystore.NewSessionStore(rdb)
+	sessions = valkeystore.NewSessionStore(rdb, sessionTTL)
 	handoffs = valkeystore.NewHandoffStore(rdb)
 	limiter = valkeystore.NewRateLimiter(rdb)
 	return

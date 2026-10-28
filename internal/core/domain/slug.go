@@ -65,6 +65,11 @@ func DeriveSlug(companyName string) string {
 		s = s[:SlugMaxLen]
 		s = strings.TrimRight(s, "-")
 	}
+	if s == "" {
+		// All characters were non-ASCII (e.g. Arabic or CJK company name) — generate a
+		// fully random slug rather than prepending "-" which would fail the slug pattern.
+		return randomSlugSuffix(SlugMinLen + 1)
+	}
 	if len(s) < SlugMinLen {
 		s = s + "-" + randomSlugSuffix(4)
 	}
@@ -104,8 +109,11 @@ func SuggestSlugs(base, companyName string, reserved map[string]bool) []string {
 		}
 	}
 
-	// Random suffix
-	for len(suggestions) < 3 {
+	// Random suffix — capped at 50 attempts to guarantee termination.
+	// Without the cap, a 30-char base slug causes every truncated candidate to
+	// equal the base itself; appendUniq then rejects all duplicates and the
+	// loop never reaches len(suggestions)==3.
+	for attempt := 0; len(suggestions) < 3 && attempt < 50; attempt++ {
 		candidate := base + "-" + randomSlugSuffix(4)
 		if len(candidate) > SlugMaxLen {
 			candidate = candidate[:SlugMaxLen]

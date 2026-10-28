@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"strings"
 	"time"
@@ -11,11 +12,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
-)
-
-const (
-	maxSignupsPerIPPerHour    = 3
-	maxAttemptsPerEmailPerDay = 5
 )
 
 // SignupInput is the validated SB-2 request (LLD §5.4).
@@ -43,19 +39,29 @@ type SignupResult struct {
 	SlugSuggestions       []string // set when State == slug_conflict
 }
 
+// maxSignupsPerIPPerHour and maxAttemptsPerEmailPerDay are the default limits.
+// SignupService uses configurable fields; PaidSignupService (Phase 1.5, on hold) references
+// these package-level constants until billing is wired.
+const (
+	maxSignupsPerIPPerHour    = 3
+	maxAttemptsPerEmailPerDay = 5
+)
+
 // SignupService handles SB-2: POST /api/v1/signup/trial (LLD §5.4).
 type SignupService struct {
-	handoffs            port.HandoffStore
-	limiter             port.RateLimiter
-	captcha             port.CaptchaVerifier
-	hasher              port.PasswordHasher
-	orchestrator        *HandoffOrchestrator
-	idgen               port.IDGenerator
-	clock               port.Clock
-	hmacKey             []byte
-	reserved            map[string]bool
-	policy              domain.PasswordPolicy
-	currentTermsVersion string
+	handoffs               port.HandoffStore
+	limiter                port.RateLimiter
+	captcha                port.CaptchaVerifier
+	hasher                 port.PasswordHasher
+	orchestrator           *HandoffOrchestrator
+	idgen                  port.IDGenerator
+	clock                  port.Clock
+	hmacKey                []byte
+	reserved               map[string]bool
+	policy                 domain.PasswordPolicy
+	currentTermsVersion    string
+	signupsPerIPPerHour    int
+	attemptsPerEmailPerDay int
 }
 
 func NewSignupService(
@@ -70,12 +76,15 @@ func NewSignupService(
 	reserved map[string]bool,
 	policy domain.PasswordPolicy,
 	currentTermsVersion string,
+	signupsPerIPPerHour int,
+	attemptsPerEmailPerDay int,
 ) *SignupService {
 	return &SignupService{
 		handoffs: handoffs, limiter: limiter, captcha: captcha, hasher: hasher,
 		orchestrator: orchestrator, idgen: idgen, clock: clock,
 		hmacKey: hmacKey, reserved: reserved, policy: policy,
 		currentTermsVersion: currentTermsVersion,
+		signupsPerIPPerHour: signupsPerIPPerHour, attemptsPerEmailPerDay: attemptsPerEmailPerDay,
 	}
 }
 
@@ -97,7 +106,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
 	}
-	if ipCount > int64(maxSignupsPerIPPerHour) {
+	if ipCount > int64(s.signupsPerIPPerHour) {
 		metrics.IncRateLimited("ip") // LLD §11.2
 		return nil, domain.NewError(domain.ErrRateLimited, "too many signups from this IP").
 			WithDetails(map[string]any{"retry_after_seconds": retryAfterSecs(ipReset), "scope": "ip"})
@@ -107,7 +116,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
 	}
-	if emailCount > int64(maxAttemptsPerEmailPerDay) {
+	if emailCount > int64(s.attemptsPerEmailPerDay) {
 		metrics.IncRateLimited("email") // LLD §11.2
 		return nil, domain.NewError(domain.ErrRateLimited, "too many attempts for this email").
 			WithDetails(map[string]any{"retry_after_seconds": retryAfterSecs(emailReset), "scope": "email"})
@@ -176,7 +185,11 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		return nil, domain.NewError(domain.ErrInvalidState, "another request is already processing this signup").
 			WithDetails(map[string]any{"retry_after_ms": 500})
 	}
-	defer s.handoffs.ReleaseLock(ctx, signupID, lockToken) //nolint:errcheck
+	defer func() {
+		// Lock TTL is 15 s — a release failure is non-fatal; the lock expires on its own.
+		// Error is intentionally ignored here; Valkey outage is surfaced via health metrics.
+		_ = s.handoffs.ReleaseLock(ctx, signupID, lockToken)
+	}()
 
 	if err := s.handoffs.Create(ctx, h); err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
@@ -229,14 +242,21 @@ func (s *SignupService) handleResubmit(
 		return nil, false, nil // treat as new attempt
 
 	case domain.StateAllocated:
-		sameDetails := existing.AdminEmailHMAC == emailHMAC &&
+		sameDetails := hmacEqual(existing.AdminEmailHMAC, emailHMAC) &&
 			existing.Slug == slug &&
 			existing.CompanyName == in.CompanyName &&
 			existing.Plan == in.Plan
 		if sameDetails {
 			// Retry with the same tenant_id and RP-1 idempotency key
-			seed, _ := s.hasher.Hash(in.Password)
-			sj, _ := seedJSON(seed)
+			metrics.IncHandoffResumed("resubmit") // LLD §11.2
+			seed, err := s.hasher.Hash(in.Password)
+			if err != nil {
+				return nil, true, domain.NewError(domain.ErrInternal, "password hashing failed")
+			}
+			sj, err := seedJSON(seed)
+			if err != nil {
+				return nil, true, domain.NewError(domain.ErrInternal, "credential serialisation failed")
+			}
 			orcResult, err := s.orchestrator.Run(ctx, OrchestratorInput{
 				Handoff:            existing,
 				AdminEmail:         domain.NormaliseEmail(in.AdminEmail),
@@ -256,12 +276,20 @@ func (s *SignupService) handleResubmit(
 			return &SignupResult{SignupID: existing.SignupID, State: orcResult.State,
 				SlugSuggestions: orcResult.SlugSuggestions}, true, nil
 		}
-		// Different details while RP-1 not confirmed → discard and start fresh
+		// Different details while RP-1 not confirmed → discard and start fresh.
+		// Acquire the lock first to avoid deleting while the original request's
+		// orchestrator is still running (G-1, LLD §9.2).
+		lockToken, acquired, _ := s.handoffs.AcquireLock(ctx, existing.SignupID)
+		if !acquired {
+			return nil, true, domain.NewError(domain.ErrInvalidState, "another request is processing this signup").
+				WithDetails(map[string]any{"retry_after_ms": 500})
+		}
+		_ = s.handoffs.ReleaseLock(ctx, existing.SignupID, lockToken)
 		_ = s.handoffs.Delete(ctx, existing.SignupID)
 		return nil, false, nil
 
 	case domain.StateIdentityCreated, domain.StateTenantPending, domain.StateSlugConflict:
-		sameDetails := existing.AdminEmailHMAC == emailHMAC
+		sameDetails := hmacEqual(existing.AdminEmailHMAC, emailHMAC)
 		if !sameDetails {
 			return nil, true, domain.NewError(domain.ErrInvalidState, "signup details changed after identity was created").
 				WithDetails(map[string]any{"reason": "details_changed"})
@@ -270,7 +298,7 @@ func (s *SignupService) handleResubmit(
 		return &SignupResult{SignupID: existing.SignupID, State: existing.State}, true, nil
 
 	case domain.StateCompleted:
-		if existing.AdminEmailHMAC == emailHMAC {
+		if hmacEqual(existing.AdminEmailHMAC, emailHMAC) {
 			return &SignupResult{SignupID: existing.SignupID, State: domain.StateCompleted,
 				EmailVerificationSent: true}, true, nil
 		}
@@ -292,10 +320,11 @@ func (s *SignupService) validate(in SignupInput) error {
 	if err := domain.ValidateAdminName(in.AdminName); err != nil {
 		return err
 	}
-	if err := domain.ValidateAdminEmail(in.AdminEmail); err != nil {
+	normEmail := domain.NormaliseEmail(in.AdminEmail)
+	if err := domain.ValidateAdminEmail(normEmail); err != nil {
 		return err
 	}
-	if err := domain.ValidatePassword(in.Password, in.AdminEmail, s.policy); err != nil {
+	if err := domain.ValidatePassword(in.Password, normEmail, s.policy); err != nil {
 		return err
 	}
 	if !domain.ValidPlan(in.Plan) {
@@ -324,6 +353,11 @@ func emailHMAC(email string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(strings.ToLower(email)))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// hmacEqual compares two HMAC hex strings in constant time to avoid timing side-channels.
+func hmacEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func retryAfterSecs(resetAt time.Time) int {

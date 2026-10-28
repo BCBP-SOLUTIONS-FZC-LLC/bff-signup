@@ -15,6 +15,11 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/service"
 )
 
+// loggerAlias is gincommon.Logger (= internal port.Logger) re-declared here
+// so that callers do not need to import gincommon just to pass a logger.
+// The handlers receive the same logger instance created in main.go.
+type loggerAlias = gincommon.Logger
+
 // Handlers holds all handler dependencies.
 type Handlers struct {
 	session             *service.SessionService
@@ -27,6 +32,8 @@ type Handlers struct {
 	slugRules           domain.SlugRules
 	requestDeadline     time.Duration
 	currentTermsVersion string
+	sessionTTLSecs      int
+	log                 loggerAlias
 }
 
 func NewHandlers(
@@ -40,12 +47,16 @@ func NewHandlers(
 	slugRules domain.SlugRules,
 	requestDeadline time.Duration,
 	currentTermsVersion string,
+	sessionTTLSecs int,
+	log loggerAlias,
 ) *Handlers {
 	return &Handlers{
 		session: session, signup: signup, paidSignup: paidSignup,
 		status: status, catalog: catalog, siteKey: siteKey,
 		policy: policy, slugRules: slugRules,
 		requestDeadline: requestDeadline, currentTermsVersion: currentTermsVersion,
+		sessionTTLSecs: sessionTTLSecs,
+		log:            log,
 	}
 }
 
@@ -78,7 +89,7 @@ func (h *Handlers) Session(c *gin.Context) {
 		return
 	}
 
-	middleware.SetSessionCookie(c, result.SID, 1800)
+	middleware.SetSessionCookie(c, result.SID, h.sessionTTLSecs)
 
 	c.JSON(http.StatusOK, SessionResponse{
 		SignupID:  result.SignupID,
@@ -176,6 +187,10 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
+		h.log.Info("signup.trial.submitted", map[string]interface{}{
+			"signup_id": result.SignupID,
+			"state":     string(result.State),
+		})
 		c.JSON(http.StatusCreated, TrialSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
@@ -231,6 +246,11 @@ func (h *Handlers) GetStatus(c *gin.Context) {
 		return
 	}
 
+	h.log.Debug("signup.status.polled", map[string]interface{}{
+		"signup_id": result.SignupID,
+		"state":     string(result.State),
+	})
+
 	resp := StatusResponse{
 		SignupID:    result.SignupID,
 		Status:      stateToStatusString(result.State),
@@ -283,10 +303,14 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 	result, err := h.status.ChangeSlug(c.Request.Context(), sess.SignupID, pathID, req.Slug)
 	if err != nil {
 		if de, ok := err.(*domain.DomainError); ok && de.Cause == domain.ErrSlugTaken {
-			// 409 slug_taken — RFC 9457 conflict with extension members for signup_id
+			// 409 slug_taken — RFC 9457 conflict; include suggestions so the browser
+			// can offer alternatives without a round-trip (mirrors SB-2 behaviour, A-3).
 			ext := map[string]any{
 				"signup_id": pathID,
 				"message":   "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address.",
+			}
+			if result != nil {
+				ext["suggestions"] = result.SlugSuggestions
 			}
 			gincommon.AbortWithProblem(c, domainErrorToProblem(de).WithExtensions(ext))
 			return
@@ -297,6 +321,10 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
+		h.log.Info("signup.slug.changed", map[string]interface{}{
+			"signup_id": result.SignupID,
+			"state":     string(result.State),
+		})
 		c.JSON(http.StatusCreated, TrialSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
@@ -443,6 +471,10 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
+		h.log.Info("signup.paid.submitted", map[string]interface{}{
+			"signup_id": result.SignupID,
+			"state":     string(result.State),
+		})
 		c.JSON(http.StatusCreated, PaidSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",

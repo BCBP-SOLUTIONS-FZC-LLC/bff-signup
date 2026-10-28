@@ -1,8 +1,10 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -41,6 +43,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 
 	// ── BFF-specific infrastructure middleware ────────────────────────────────
 	r.Use(noStoreHeaders())
+	r.Use(middleware.BodyLimit()) // 16 KB hard cap — LLD §5.1, §10.5
 	r.Use(middleware.ClientIP())
 	r.Use(middleware.SessionCookie())
 	r.Use(middleware.CSRFToken())
@@ -85,6 +88,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	// @Failure      503  {object}  ErrorResponse
 	// @Router       /readyz [get]
 	r.GET("/readyz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := cfg.Valkey.Ping(ctx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "valkey unavailable"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
@@ -159,11 +168,18 @@ func requireValidatedSession(svc *service.SessionService) gin.HandlerFunc {
 	}
 }
 
-// noStoreHeaders sets Cache-Control: no-store and X-Content-Type-Options on every response.
+// noStoreHeaders sets security response headers on every response (LLD §10.4).
+//   - Cache-Control: no-store — prevents caching of session/CSRF tokens
+//   - X-Content-Type-Options: nosniff — blocks MIME sniffing
+//   - X-Frame-Options: DENY — blocks clickjacking via iframe embedding
+//   - Referrer-Policy: strict-origin-when-cross-origin — prevents signup URLs
+//     and CAPTCHA tokens from leaking to third-party origins via Referer header
 func noStoreHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Next()
 	}
 }

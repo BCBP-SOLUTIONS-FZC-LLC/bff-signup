@@ -8,6 +8,81 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — Production hardening: security, correctness, observability (2026-10-28)
+
+All changes on branch `bff-signup-initial`. Zero new features — every change is hardening, correctness, or observability.
+
+#### Security
+
+- **CSRF constant-time comparison** (`session_service.go`) — `hashCSRF(token) != sess.CSRFHash` replaced with `subtle.ConstantTimeCompare`; eliminates timing side-channel on CSRF validation.
+- **Email HMAC constant-time comparison** (`signup_service.go`) — all `existing.AdminEmailHMAC == emailHMAC` comparisons replaced with `hmacEqual()` using `subtle.ConstantTimeCompare`.
+- **Security response headers** (`router.go`) — `noStoreHeaders()` now sets `X-Frame-Options: DENY` (clickjacking) and `Referrer-Policy: strict-origin-when-cross-origin` (prevents signup URL / CAPTCHA token leaking to third-party origins via Referer header). Existing `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` unchanged.
+- **Slowloris prevention** (`main.go`) — `ReadHeaderTimeout: 5s` added to the API `http.Server`.
+- **CAPTCHA_SKIP blocked outside dev/test/local** (`config.go`) — `Validate()` now rejects `CAPTCHA_SKIP=true` when `APP_ENV` is not `dev`, `test`, or `local`. Config bounds also added for all timeouts and `SESSION_TTL_SECONDS`.
+- **CAPTCHA bypass logged at startup** (`main.go`) — `log.Warn("captcha.skip.active")` emitted when `noopCaptcha` is wired, so operators see it immediately in structured logs.
+- **SameSite=Strict cookie** (`middleware/session.go`) — `c.SetSameSite(http.SameSiteStrictMode)` called before `c.SetCookie` instead of fragile manual header concatenation.
+- **Rate limiter: fixed-window** (`valkey/rate_limiter.go`) — replaced `INCR + EXPIRE` pipeline (sliding window) with a Lua script that sets `EXPIRE` only on `count==1`. Fixes exploit where an attacker could reset the 1-hour window indefinitely by spacing requests before expiry. `resetAt` now uses actual remaining TTL from Valkey's `TTL` command.
+- **Rate limiter type assertions checked** (`valkey/rate_limiter.go`) — silent `_, ok` assertions replaced with explicit `ok1`/`ok2` guards; returns error on type mismatch instead of silently resetting counter to 0.
+- **handleResubmit race fix** (`signup_service.go`) — when an existing `StateAllocated` handoff has different details, the service now acquires the distributed lock before deleting, preventing deletion during an active RP-1 run.
+
+#### Correctness
+
+- **SB-4 now returns 409 with slug suggestions** (`status_service.go`, `handlers.go`) — `ChangeSlug` was silently swallowing `ErrSlugTaken` and returning `202 "provisioning"` when a replacement slug was also taken. Now returns `409` with suggestions, matching SB-2 behaviour (A-3). `StatusResult.SlugSuggestions` field added.
+- **SuggestSlugs: 50-attempt iteration cap** (`domain/slug.go`) — random-suffix loop was unbounded; for a 30-char base slug every truncated candidate equals the base, so `appendUniq` rejects all duplicates and the loop never exits. Cap added.
+- **DeriveSlug: non-ASCII company names** (`domain/slug.go`) — all-non-ASCII names (Arabic, CJK, Cyrillic) no longer produce `"-xxxx"` (invalid slug pattern). Returns a random alphanumeric slug instead.
+- **Resume window uses `time.Duration`** (`handoff_orchestrator.go`) — replaced `float64` seconds comparison with `const resumeWindow = 15 * time.Minute`.
+- **Session TTL from config** (`valkey/session_store.go`, `handlers.go`) — `SESSION_TTL_SECONDS` env var is now consumed. Previously the Valkey TTL was hardcoded at 30 min and the cookie max-age at 1800.
+- **Rate limits from config** (`service/*.go`) — `RATE_SIGNUPS_PER_IP_PER_HOUR`, `RATE_ATTEMPTS_PER_EMAIL_PER_DAY`, `RATE_SESSIONS_PER_IP_PER_HOUR`, `RATE_POLLS_PER_SESSION_PER_MIN` were loaded by `Config` but never consumed — all four services used hardcoded constants. Now wired via constructor parameters.
+- **Eligibility timeout wired** (`cmd/server/main.go`, `handoff_orchestrator.go`) — `ELIGIBILITY_TIMEOUT_MS` config field was dead. `HandoffOrchestrator` now accepts `eligibilityTimeout time.Duration` and wraps the eligibility call in `context.WithTimeout`.
+- **I-1 response verified** (`handoff_orchestrator.go`) — `_ = resp` (discarded I-1 response) replaced with tenant-ID consistency check.
+- **GetStatus/ChangeSlug: Valkey error → 503** (`status_service.go`) — `handoffs.Get()` error was mapped to `ErrSignupNotFound` (404); now correctly maps to `ErrDependencyUnavailable` (503).
+- **handleResubmit hash errors propagated** (`signup_service.go`) — `seed, _ := s.hasher.Hash(...)` and `sj, _ := seedJSON(seed)` silently discarded errors on the resubmit path; now returns `ErrInternal`.
+- **PaidSignupService: orchestrator injected** (`paid_signup_service.go`) — inline `&HandoffOrchestrator{...}` construction replaced with injected `*HandoffOrchestrator`.
+- **Catalog singleflight** (`catalog/client.go`) — `singleflight.Group` added to prevent thundering-herd on cache expiry; concurrent cache-miss callers share one upstream fetch.
+- **Body limit middleware** (`middleware/body_limit.go`) — 16 KB hard cap on all request bodies: Content-Length fast-path + `http.MaxBytesReader` slow-path for chunked bodies.
+- **Helm: terminationGracePeriodSeconds** (`deploy/helm/templates/deployment.yaml`) — explicitly set to 35 s (5 s above Go shutdown drain) so the relationship is not coincidental with the K8s default.
+- **Helm: topologySpreadConstraints** (`deploy/helm/templates/deployment.yaml`) — `maxSkew: 1` on `kubernetes.io/hostname` ensures the two replicas land on different nodes.
+- **Helm: duplicate YAML keys removed** (`deploy/helm/values.yaml`) — duplicate `existingSecret` / `envFromSecret` top-level keys and duplicate `serviceEntry` key removed; YAML parsers silently ignored the first occurrence.
+- **`values-prod.yaml` self-contained** — `SESSION_TTL_SECONDS`, `TERMS_CURRENT_VERSION`, `SLUG_RESERVED`, and all `RATE_*` overrides now explicit in the prod values file.
+- **`.env-example` complete** — all 15+ configurable env vars now documented including `SESSION_TTL_SECONDS`, `CAPTCHA_SKIP` (with warning), all timeout vars, rate limit vars, `TERMS_CURRENT_VERSION`, and Phase 1.5 stubs.
+
+#### Observability
+
+- **Dependency metrics wired to all 4 adapters** — `ObserveDependencyCall` was registered in `business.go` but **never called** from any outbound adapter; `bff_signup_dependency_call_duration_seconds` was empty in production and the SLO recording rules computed over zero data. All four adapters now instrument immediately after `httpClient.Do()`:
+  - `orgmembership`: `provision_tenant`, `trial_eligibility`, `slug_resolve`
+  - `realmprovisioner`: `provision_trial`, `provision_direct`
+  - `turnstile`: `siteverify`
+  - `catalog`: `plans`
+- **Startup logs structured** (`main.go`) — all startup failures after logger init now emit `log.Error()` before returning. New `log.Info()` at each successful init phase: config loaded (with key params), tracing init, metrics registered, Valkey ready.
+- **Metric registry doc** (`docs/observability/metric-registry.md`) — rewritten to correctly document three tiers (Tier 1 Proposed, Tier 2 unused, Tier 3 service-specific), all 9 collectors, adapter instrumentation map, label vocabulary, and backward-compatibility migration plan.
+- **Runbook metric name corrected** (`docs/observability/runbooks.md`) — `signup_bff_provisioning_failed_total` → `bff_signup_provisioning_failed_total`.
+- **All logs/metrics/traces through platform-gincommon** — verified and enforced by CI: no standard library `"log"` package, no `fmt.Print*` outside `main()`, no raw `prometheus.New*` outside metrics package, no raw OTel API outside `main.go`.
+
+#### CI / Quality gates
+
+- **`check-log-sink.sh`** — new CI script enforcing LOG-1 (no `"log"` import), LOG-2 (no `fmt.Print*` outside `main()`), LOG-3 (no third-party loggers), METRICS-1 (no raw `prometheus.New*`), TRACES-1 (no raw OTel API).
+- **`check-metric-naming.sh` enhanced** — added: high-cardinality label prohibition, Tier 2 boundary guard, adapter instrumentation enforcement (CI fails if any adapter omits `ObserveDependencyCall`).
+- **`log-sink-lint` Makefile target** — `make log-sink-lint` runs `check-log-sink.sh`.
+- **`metrics-lint` Makefile target fixed** — now runs `check-metric-naming.sh` + `metrics-registry-lint.sh` (was pointing to non-existent `scripts/validate-metrics.sh`).
+- **`make ci` extended** — now includes `metrics-lint` and `log-sink-lint` in the full local CI gate.
+- **Coverage gate corrected** — `coverage-gate.sh` comment and `README.md` both now say 95% (actual enforcement was always 95%; comments incorrectly said 80%).
+- **`validate-quality.yml`** — new CI step: "Observability sink lint".
+
+#### Tests added
+
+- Config: bounds validation (9 sub-cases: RPTimeout, I1Timeout, EligibilityTimeout, RequestDeadline, SessionTTL), CAPTCHA_SKIP rejected in prod, CAPTCHA_SKIP allowed in dev/test/local.
+- Service: handleResubmit lock-failure path (verifies handoff survives lock contention), SB-4 slug conflict returns 409 with suggestions, GetStatus/ChangeSlug return 503 on Valkey error.
+- HTTP: body limit (Content-Length fast-path, exact 16 KB boundary, chunked slow-path), SameSite=Strict cookie, AcceptLanguage empty/unknown fallback, SB-4 409-with-suggestions handler test.
+- Domain: DeriveSlug non-ASCII (Arabic/CJK/Cyrillic), SuggestSlugs 50-attempt cap, punycode email domain accepted, raw non-ASCII domain rejected.
+- Valkey: fixed-window TTL not reset on subsequent increments (3 new rate limiter tests).
+- Middleware: `SetSessionCookie` SameSite attribute, body limit all paths.
+
+#### Dependency update
+
+- `github.com/prometheus/common` v0.72.1 → **v0.73.0** (indirect; updated via `go get -u ./...` + `go mod tidy`).
+
+---
+
 ### Added — Phase 1.5 Direct-Paid Signup reservation (2026-10-24)
 
 **Phase 1.5 stub fully wired — activates with `PAID_SIGNUP_ENABLED=true`:**
@@ -34,7 +109,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Service foundation:**
 
-- `go.mod` — module `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`, Go 1.23.
+- `go.mod` — module `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`, Go 1.26.10.
 - `cmd/server/main.go` — composition root with fail-fast config validation, Valkey ping, DI, graceful shutdown (HTTP drain → Valkey close).
 - `cmd/server/wiring.go` — factory functions for all upstream clients (Valkey stores, RP-1, O&M, Turnstile, PBKDF2 hasher, Catalog).
 - `cmd/server/env_test.go` — startup tests: missing required env vars panic, `PBKDF2_ITERATIONS < 210000` rejected, `SBFF_HMAC_KEY < 32 bytes` rejected, plan fallback never contains `"trial"`.

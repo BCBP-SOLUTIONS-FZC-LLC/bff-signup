@@ -38,6 +38,7 @@ func TestRetryAfterSecs_NegativeDuration(t *testing.T) {
 			fixtures.NewFakeRealmProvisioner("kc"),
 			fixtures.NewFakeOrgMembership("tid"),
 			fixtures.NewFakeClock(),
+			10*time.Millisecond,
 		),
 		fixtures.NewFakeIDGenerator(),
 		fixtures.NewFakeClock(),
@@ -45,6 +46,7 @@ func TestRetryAfterSecs_NegativeDuration(t *testing.T) {
 		nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
 
 	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000090", CSRFHash: "h"}
@@ -75,10 +77,10 @@ func (l *pastResetRateLimiter) IncrPoll(_ context.Context, _ string) (int64, tim
 	return 999, time.Now().Add(-1 * time.Hour), nil
 }
 
-// TestIsDomainCause_StringsContainsFallback exercises the strings.Contains branch of isDomainCause.
-// HandoffOrchestrator.callI1Once calls isDomainCause(err, ErrSlugTaken). When the error is a
-// plain error (not *DomainError) whose text contains ErrSlugTaken.Error(), strings.Contains fires.
-func TestIsDomainCause_StringsContainsFallback(t *testing.T) {
+// TestIsDomainCause_NonDomainErrorNotMatchedAsSlugConflict verifies that isDomainCause returns
+// false for a plain (non-DomainError) error, even when the error text contains ErrSlugTaken.Error().
+// A plain error from ProvisionTenant is now treated as a generic error, not a slug conflict.
+func TestIsDomainCause_NonDomainErrorNotMatchedAsSlugConflict(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	om := &plainErrOrgMembership{plainErr: &slugTakenPlainErr{}}
 	clk := fixtures.NewFakeClock()
@@ -95,12 +97,12 @@ func TestIsDomainCause_StringsContainsFallback(t *testing.T) {
 	}
 	require.NoError(t, handoffs.Create(context.Background(), h))
 
-	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner("kc"), om, clk)
-	// ChangeSlug → callI1Once → isDomainCause(plainErr, ErrSlugTaken) → strings.Contains → true
+	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner("kc"), om, clk, 10*time.Millisecond)
+	// ChangeSlug → callI1Once → isDomainCause(plainErr, ErrSlugTaken) → false (not a DomainError)
+	// The plain error is treated as a generic error, not a slug conflict.
 	result, err := orch.ChangeSlug(context.Background(), h, "newslug")
 	require.Error(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, domain.StateSlugConflict, result.State)
+	assert.Nil(t, result, "plain non-DomainError from ProvisionTenant must not be treated as a slug conflict")
 }
 
 // slugTakenPlainErr is a plain error (not *DomainError) whose text contains ErrSlugTaken.Error().
@@ -148,9 +150,11 @@ func TestStateToStatus_AllocatedState(t *testing.T) {
 			fixtures.NewFakeRealmProvisioner("kc"),
 			fixtures.NewFakeOrgMembership("tid"),
 			clk,
+			10*time.Millisecond,
 		),
 		clk,
 		nil,
+		60,
 	)
 
 	result, err := svc.GetStatus(context.Background(),
@@ -265,9 +269,12 @@ func TestSubmitPaid_HandoffCreateFails(t *testing.T) {
 	handoffs := &errOnCreateHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
 	clk := fixtures.NewFakeClock()
 	pol := domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	om := fixtures.NewFakeOrgMembership("tid")
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	svc := service.NewPaidSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		fixtures.NewFakeBillingClient("sub-001"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeBillingClient("sub-001"), rp, om, orch,
 		fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09",
 	)
@@ -285,9 +292,12 @@ func TestSubmitPaid_HandoffUpdateAfterBillingFails(t *testing.T) {
 	handoffs := &errOnUpdateHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore(), failAfter: 0}
 	clk := fixtures.NewFakeClock()
 	pol := domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	om := fixtures.NewFakeOrgMembership("tid")
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	svc := service.NewPaidSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		fixtures.NewFakeBillingClient("sub-001"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeBillingClient("sub-001"), rp, om, orch,
 		fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09",
 	)
@@ -331,9 +341,12 @@ func TestSubmitPaid_HandoffUpdateAfterRP2Fails(t *testing.T) {
 	handoffs := &errOnUpdateHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore(), failAfter: 1}
 	clk := fixtures.NewFakeClock()
 	pol := domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	om := fixtures.NewFakeOrgMembership("tid")
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	svc := service.NewPaidSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		fixtures.NewFakeBillingClient("sub-001"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeBillingClient("sub-001"), rp, om, orch,
 		fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09",
 	)
@@ -354,9 +367,12 @@ func TestSubmitPaid_LockNotAcquired(t *testing.T) {
 
 	clk := fixtures.NewFakeClock()
 	pol := domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	om := fixtures.NewFakeOrgMembership("tid")
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	svc := service.NewPaidSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		fixtures.NewFakeBillingClient("sub-001"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeBillingClient("sub-001"), rp, om, orch,
 		fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09",
 	)

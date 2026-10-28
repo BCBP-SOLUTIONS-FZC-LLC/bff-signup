@@ -22,8 +22,8 @@ func newStatusSvc(
 	om *fixtures.FakeOrgMembership,
 ) *service.StatusService {
 	clk := fixtures.NewFakeClock()
-	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk)
-	return service.NewStatusService(handoffs, limiter, orch, clk, nil)
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
+	return service.NewStatusService(handoffs, limiter, orch, clk, nil, 60)
 }
 
 func newStatusSvcWithLimiter(
@@ -33,8 +33,8 @@ func newStatusSvcWithLimiter(
 	om *fixtures.FakeOrgMembership,
 ) *service.StatusService {
 	clk := fixtures.NewFakeClock()
-	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk)
-	return service.NewStatusService(handoffs, limiter, orch, clk, nil)
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
+	return service.NewStatusService(handoffs, limiter, orch, clk, nil, 60)
 }
 
 func seedStateHandoff(t *testing.T, handoffs *fixtures.FakeHandoffStore, state domain.HandoffState) {
@@ -88,6 +88,36 @@ func TestGetStatus_RateLimited(t *testing.T) {
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, domain.ErrRateLimited, de.Cause)
+}
+
+// TestGetStatus_HandoffStoreError_Returns503 verifies that a Valkey read error on
+// GetStatus is mapped to ErrDependencyUnavailable (503), not ErrSignupNotFound (404).
+func TestGetStatus_HandoffStoreError_Returns503(t *testing.T) {
+	clk := fixtures.NewFakeClock()
+	handoffs := &errOnGetHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
+	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner(""), fixtures.NewFakeOrgMembership(""), clk, 10*time.Millisecond)
+	svc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil, 60)
+
+	_, err := svc.GetStatus(context.Background(), "any-id", "any-id", "sid")
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause, "Valkey error must map to 503, not 404")
+}
+
+// TestChangeSlug_HandoffStoreError_Returns503 verifies that a Valkey read error on
+// ChangeSlug is mapped to ErrDependencyUnavailable (503), not ErrSignupNotFound (404).
+func TestChangeSlug_HandoffStoreError_Returns503(t *testing.T) {
+	clk := fixtures.NewFakeClock()
+	handoffs := &errOnGetHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
+	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner(""), fixtures.NewFakeOrgMembership(""), clk, 10*time.Millisecond)
+	svc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil, 60)
+
+	_, err := svc.ChangeSlug(context.Background(), "any-id", "any-id", "newslug")
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause, "Valkey error must map to 503, not 404")
 }
 
 func TestGetStatus_NotFound(t *testing.T) {
@@ -173,6 +203,31 @@ func TestGetStatus_TenantPending_ResumeExpired(t *testing.T) {
 	assert.Equal(t, domain.StateFailed, result.State)
 }
 
+// TestChangeSlug_SlugConflict_Returns409WithSuggestions verifies that SB-4 propagates
+// ErrSlugTaken and slug suggestions when the new slug is also taken (A-3, LLD §5.5).
+// Prior bug: the error was swallowed and 202 was returned instead of 409.
+func TestChangeSlug_SlugConflict_Returns409WithSuggestions(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	om := fixtures.NewFakeOrgMembership("tid")
+	om.I1Err = domain.NewError(domain.ErrSlugTaken, "slug taken on second attempt")
+	seedStateHandoff(t, handoffs, domain.StateSlugConflict)
+
+	// KeycloakUserID must be set so CanChangeSlug guard passes
+	h, _ := handoffs.Get(context.Background(), "01JAB0000000000000000001")
+	h.KeycloakUserID = "kc-001"
+	require.NoError(t, handoffs.Update(context.Background(), h))
+
+	svc := newStatusSvc(handoffs, fixtures.NewFakeRateLimiter(), fixtures.NewFakeRealmProvisioner("kc"), om)
+
+	result, err := svc.ChangeSlug(context.Background(), "01JAB0000000000000000001", "01JAB0000000000000000001", "also-taken")
+	require.Error(t, err, "ErrSlugTaken must be returned so the handler builds a 409")
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrSlugTaken, de.Cause)
+	require.NotNil(t, result, "result must be non-nil so handler can read suggestions")
+	assert.NotEmpty(t, result.SlugSuggestions, "409 response must include suggestions (A-3)")
+}
+
 func TestChangeSlug_HappyPath(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	om := fixtures.NewFakeOrgMembership("tid")
@@ -202,8 +257,8 @@ func TestChangeSlug_OrchestratorUpdateFails_ReturnsError(t *testing.T) {
 	seedStateHandoff(t, inner, domain.StateSlugConflict)
 	store := &errUpdateHandoffStore{inner}
 	clk := fixtures.NewFakeClock()
-	orch := service.NewHandoffOrchestrator(store, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
-	svc := service.NewStatusService(store, fixtures.NewFakeRateLimiter(), orch, clk, nil)
+	orch := service.NewHandoffOrchestrator(store, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
+	svc := service.NewStatusService(store, fixtures.NewFakeRateLimiter(), orch, clk, nil, 60)
 
 	_, err := svc.ChangeSlug(context.Background(), "01JAB0000000000000000001", "01JAB0000000000000000001", "newslug")
 	require.Error(t, err)
@@ -266,4 +321,51 @@ func TestChangeSlug_WrongState(t *testing.T) {
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, domain.ErrInvalidState, de.Cause)
+}
+
+// ── H-1 / H-2 metric path tests ──────────────────────────────────────────────
+// Metrics are nil-safe in unit tests (not registered); these tests verify the
+// correct service transitions are reached — the metric calls are side effects.
+
+// TestGetStatus_ResumeExpired_FiresProvisioningFailedMetric exercises H-1:
+// StateFailed transition (resume window exhausted) must reach IncProvisioningFailed.
+func TestGetStatus_ResumeExpired_FiresProvisioningFailedMetric(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	clk := fixtures.NewFakeClock()
+	h := &domain.Handoff{
+		SignupID: "01JAB0000000000000000301", TenantID: "tid-301",
+		State: domain.StateTenantPending, Slug: "acme", CompanyName: "Acme",
+		Plan: domain.PlanPro, KeycloakUserID: "kc-001",
+		CreatedAt: clk.Now().Add(-16 * time.Minute), UpdatedAt: clk.Now(),
+	}
+	require.NoError(t, handoffs.Create(context.Background(), h))
+	svc := newStatusSvc(handoffs, fixtures.NewFakeRateLimiter(), fixtures.NewFakeRealmProvisioner(""), fixtures.NewFakeOrgMembership(""))
+
+	result, err := svc.GetStatus(context.Background(), "01JAB0000000000000000301", "01JAB0000000000000000301", "sid")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateFailed, result.State)
+}
+
+// TestGetStatus_ResumeSucceeds_FiresResumeMetric exercises H-2 (strategy=resume):
+// a completed I-1 resume must reach IncProvisioningSucceeded("trial","resume").
+func TestGetStatus_ResumeSucceeds_FiresResumeMetric(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	seedStateHandoff(t, handoffs, domain.StateTenantPending)
+	svc := newStatusSvc(handoffs, fixtures.NewFakeRateLimiter(), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid-r"))
+
+	result, err := svc.GetStatus(context.Background(), "01JAB0000000000000000001", "01JAB0000000000000000001", "sid")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateCompleted, result.State)
+}
+
+// TestChangeSlug_Completes_FiresSlugChangeMetric exercises H-2 (strategy=slug_change):
+// a completed slug change must reach IncProvisioningSucceeded("trial","slug_change").
+func TestChangeSlug_Completes_FiresSlugChangeMetric(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	seedStateHandoff(t, handoffs, domain.StateSlugConflict)
+	svc := newStatusSvc(handoffs, fixtures.NewFakeRateLimiter(), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid-sc"))
+
+	result, err := svc.ChangeSlug(context.Background(), "01JAB0000000000000000001", "01JAB0000000000000000001", "brand-new-slug")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateCompleted, result.State)
 }

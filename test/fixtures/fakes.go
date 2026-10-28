@@ -115,6 +115,8 @@ func (f *FakeHandoffStore) ReleaseLock(_ context.Context, signupID, token string
 	return nil
 }
 
+func (f *FakeHandoffStore) Ping(_ context.Context) error { return nil }
+
 // ── FakeRateLimiter ───────────────────────────────────────────────────────────
 
 // FakeRateLimiter counts increments and lets tests set limits per scope.
@@ -246,7 +248,11 @@ func (f *FakeOrgMembership) ProvisionTenant(_ context.Context, req port.Provisio
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.I1Calls = append(f.I1Calls, req)
-	return f.I1Resp, f.I1Err
+	if f.I1Err != nil {
+		return nil, f.I1Err
+	}
+	// Echo the request tenant ID — matches O&M's idempotent behaviour.
+	return &port.ProvisionTenantResponse{TenantID: req.TenantID}, nil
 }
 
 // ── FakeBillingClient ─────────────────────────────────────────────────────────

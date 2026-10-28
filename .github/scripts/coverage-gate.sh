@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Enforces minimum total test coverage (default 80%).
-# bff-signup has no database layer, so 80% is the target (vs 95% for DB services).
+# Enforces minimum total test coverage (default 95%).
+# Override with COVERAGE_THRESHOLD=<n> in CI if needed.
 set -euo pipefail
 
 THRESHOLD="${COVERAGE_THRESHOLD:-95}"

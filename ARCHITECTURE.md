@@ -25,11 +25,11 @@ graph TD
     end
 
     subgraph adapters_out["Outbound Adapters — internal/adapter/outbound/"]
-        valkey_s["valkey/\nsession_store.go — sbff:sess: (30 min sliding)\nhandoff_store.go — sbff:handoff: + distributed lock (SET NX PX 15s Lua release)\nrate_limiter.go — sbff:rl:ip/email/sess/poll counters"]
-        rp["realmprovisioner/\nRP-1 POST /internal/tenants/provision-trial · Key: signup:tenantID:rp1\nRP-2 POST /internal/tenants/provision-direct · Key: signup:tenantID:rp2 (§19)\nRFC 9457 errorCode branching (never detail)"]
-        om["orgmembership/\nI-1 POST /internal/tenants (idempotent on tenant_id)\neligibility POST /internal/trial-eligibility\nRFC 9457 errorCode branching"]
-        turnstile["turnstile/\nCloudflare siteverify\nhostname verification after success"]
-        catalog["catalog/\n5-min in-process cache\nstatic plansFallback on failure"]
+        valkey_s["valkey/\nsession_store.go — sbff:sess: (TTL from SESSION_TTL_SECONDS, sliding)\nhandoff_store.go — sbff:handoff: + distributed lock (SET NX PX 15s Lua release)\nrate_limiter.go — sbff:rl:ip/email/sess/poll counters (fixed-window Lua script)"]
+        rp["realmprovisioner/\nRP-1 POST /internal/tenants/provision-trial · Key: signup:tenantID:rp1\nRP-2 POST /internal/tenants/provision-direct · Key: signup:tenantID:rp2 (§19)\nRFC 9457 errorCode branching · ObserveDependencyCall (latency + outcome)"]
+        om["orgmembership/\nI-1 POST /internal/tenants (idempotent on tenant_id)\neligibility POST /internal/trial-eligibility (150 ms context)\nPUB-1 GET /public/tenants/resolve (fail-open)\nObserveDependencyCall for all 3 operations"]
+        turnstile["turnstile/\nCloudflare siteverify + hostname check\nObserveDependencyCall"]
+        catalog["catalog/\n5-min in-process cache + singleflight (thundering-herd prevention)\nstatic plansFallback on failure · ObserveDependencyCall"]
         hasher["hasher/\nPBKDF2-SHA512 · 210,000 iterations · 16-byte salt\noutput: HashedPasswordSeed JSON → RP-1\nplain password zeroed after use (SB-INV-2)"]
     end
 
@@ -154,13 +154,19 @@ stateDiagram-v2
 
 | Control | Mechanism | Layer |
 |---|---|---|
-| Bot prevention | Cloudflare Turnstile (invisible, every SB-2) | Outbound adapter |
-| CSRF | Synchronizer token (SHA-256 in session, `X-CSRF-Token` header, constant-time compare) | Middleware |
+| Bot prevention | Cloudflare Turnstile (invisible, every SB-2); CAPTCHA must pass before any rate-limit increment (SB-INV-5) | Outbound adapter |
+| CSRF | Synchronizer token (SHA-256 in session, `X-CSRF-Token` header, `subtle.ConstantTimeCompare`) | Middleware |
 | Origin check | `Origin` header must equal `signup.bcbpsolutions.com` on every POST | Middleware |
-| Rate limiting | Per-IP: 3/hour; per-email: 5/24h; per-session: 20 sessions/IP/hour; polls: 60/min | Valkey counters |
+| Clickjacking | `X-Frame-Options: DENY` on every response | Middleware |
+| Referrer leak | `Referrer-Policy: strict-origin-when-cross-origin` on every response | Middleware |
+| Slowloris | `ReadHeaderTimeout: 5s` on the HTTP server | `main.go` |
+| Rate limiting | Fixed-window Lua script (not sliding); per-IP: 3/hour; per-email: 5/24h; per-session: 20/hour; polls: 60/min | Valkey counters |
+| Body size | `MaxBytesReader` + Content-Length fast-path; 16 KB hard cap | Middleware |
+| CAPTCHA_SKIP guard | `config.Validate()` rejects `CAPTCHA_SKIP=true` when `APP_ENV` ≠ dev/test/local | Config |
 | Client IP | `x-envoy-external-address` only — never `X-Forwarded-For` | Middleware |
-| Password | PBKDF2-SHA512, 210,000 iterations, 16-byte salt; plain text never leaves memory | Hasher adapter |
-| Email privacy | HMAC-SHA256(email, SBFF_HMAC_KEY) in Valkey — raw email never stored | Service layer |
+| Password | PBKDF2-SHA512, 210,000 iterations, 16-byte salt; plain text never leaves process memory; derived key zeroed after encoding | Hasher adapter |
+| Email privacy | HMAC-SHA256(email, SBFF_HMAC_KEY) in Valkey — raw email never stored or logged; comparison uses `subtle.ConstantTimeCompare` | Service layer |
+| Handoff race guard | Distributed lock acquired before deleting StateAllocated handoff on resubmit-with-different-details | Service layer |
 | Mesh identity | SPIFFE `spiffe://<trust>/ns/bff/sa/bff-signup`; Istio mTLS to RP-1 and I-1 | Istio sidecar |
 | Session isolation | SB-3/SB-4 reject `signup_id` not owned by caller's session | Service layer |
 

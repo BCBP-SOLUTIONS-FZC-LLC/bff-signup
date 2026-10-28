@@ -26,6 +26,14 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
+// noopLogger is a silent test logger satisfying gincommon.Logger.
+type noopLogger struct{}
+
+func (noopLogger) Debug(_ string, _ map[string]interface{}) {}
+func (noopLogger) Info(_ string, _ map[string]interface{})  {}
+func (noopLogger) Warn(_ string, _ map[string]interface{})  {}
+func (noopLogger) Error(_ string, _ map[string]interface{}) {}
+
 func buildHandlers(
 	sessions *fixtures.FakeSessionStore,
 	handoffs *fixtures.FakeHandoffStore,
@@ -37,9 +45,9 @@ func buildHandlers(
 ) *inboundhttp.Handlers {
 	clk := fixtures.NewFakeClock()
 	idgen := fixtures.NewFakeIDGenerator()
-	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk)
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 
-	sessionSvc := service.NewSessionService(sessions, limiter, idgen, clk)
+	sessionSvc := service.NewSessionService(sessions, limiter, idgen, clk, 20)
 	signupSvc := service.NewSignupService(
 		handoffs, limiter, captcha, &fixtures.FakePasswordHasher{},
 		orch, idgen, clk,
@@ -47,8 +55,9 @@ func buildHandlers(
 		nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
-	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil)
+	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil, 60)
 
 	return inboundhttp.NewHandlers(
 		sessionSvc, signupSvc, nil, statusSvc, catalog,
@@ -57,6 +66,8 @@ func buildHandlers(
 		domain.SlugRules{Pattern: `^[a-z0-9-]+$`, Min: 3, Max: 30},
 		2500*time.Millisecond,
 		"2026-09",
+		1800,
+		noopLogger{},
 	)
 }
 
@@ -379,8 +390,9 @@ func TestHandlerSubmitTrial_LongUserAgent_IsTruncated(t *testing.T) {
 	assert.Less(t, w.Code, 500)
 }
 
-func TestHandlerChangeSlug_Returns202_WhenSlugConflict(t *testing.T) {
-	// Slug taken again → handler returns 409 (slug_taken response)
+func TestHandlerChangeSlug_Returns409WithSuggestions_WhenNewSlugAlsoTaken(t *testing.T) {
+	// When the replacement slug is also taken, SB-4 must return 409 with suggestions —
+	// identical behaviour to SB-2 (A-3). Previous bug: error was swallowed and 202 returned.
 	handoffs := fixtures.NewFakeHandoffStore()
 	clk := fixtures.NewFakeClock()
 	require.NoError(t, handoffs.Create(context.Background(), &domain.Handoff{
@@ -409,9 +421,9 @@ func TestHandlerChangeSlug_Returns202_WhenSlugConflict(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	newRouter(h).ServeHTTP(w, req)
 
-	// StatusService swallows ErrSlugTaken and returns StateSlugConflict without error;
-	// the handler's default branch returns 202 with "provisioning" status.
-	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, http.StatusConflict, w.Code, "second slug conflict must return 409, not 202")
+	body409 := w.Body.String()
+	assert.Contains(t, body409, "suggestions", "409 response must include slug suggestions (A-3)")
 }
 
 func TestHandlerGetStatus_NotFound(t *testing.T) {
@@ -489,25 +501,25 @@ func buildHandlersWithPaid(
 ) *inboundhttp.Handlers {
 	clk := fixtures.NewFakeClock()
 	idgen := fixtures.NewFakeIDGenerator()
-	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk)
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	pol := domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}
 
-	sessionSvc := service.NewSessionService(fixtures.NewFakeSessionStore(), limiter, idgen, clk)
+	sessionSvc := service.NewSessionService(fixtures.NewFakeSessionStore(), limiter, idgen, clk, 20)
 	signupSvc := service.NewSignupService(
 		handoffs, limiter, &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		orch, idgen, clk, []byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09",
+		orch, idgen, clk, []byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09", 3, 5,
 	)
 	paidSvc := service.NewPaidSignupService(
 		handoffs, limiter, &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		billing, rp, om, idgen, clk,
+		billing, rp, om, orch, idgen, clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09",
 	)
-	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil)
+	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil, 60)
 
 	return inboundhttp.NewHandlers(
 		sessionSvc, signupSvc, paidSvc, statusSvc, fixtures.NewFakeCatalog(),
 		"site-key", pol, domain.SlugRules{Pattern: `^[a-z0-9-]+$`, Min: 3, Max: 30},
-		2500*time.Millisecond, "2026-09",
+		2500*time.Millisecond, "2026-09", 1800, noopLogger{},
 	)
 }
 
@@ -826,8 +838,7 @@ func TestHandlerSubmitPaid_BadJSON(t *testing.T) {
 // ── acceptLocale coverage ──────────────────────────────────────────────────────
 
 func TestHandlerSession_AcceptLanguage_Forwarded(t *testing.T) {
-	// Verify that a valid Accept-Language header is forwarded through the handler
-	// (exercises the acceptLocale allowed-locale branch).
+	// Valid allow-listed locale is accepted.
 	h := buildHandlers(
 		fixtures.NewFakeSessionStore(), fixtures.NewFakeHandoffStore(),
 		fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
@@ -840,7 +851,42 @@ func TestHandlerSession_AcceptLanguage_Forwarded(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Language", "ar-AE")
 	newRouter(h).ServeHTTP(w, req)
-	// Any 2xx is sufficient — we're checking acceptLocale doesn't panic
+	assert.Less(t, w.Code, 500)
+}
+
+// TestHandlerSession_AcceptLanguage_EmptyFallsBackToEnUS verifies the empty-header
+// branch of acceptLocale: no Accept-Language header → "en-US" default (no panic).
+func TestHandlerSession_AcceptLanguage_EmptyFallsBackToEnUS(t *testing.T) {
+	h := buildHandlers(
+		fixtures.NewFakeSessionStore(), fixtures.NewFakeHandoffStore(),
+		fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeCatalog(),
+	)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/trial", trialBody(t, nil))
+	req.Header.Set("Content-Type", "application/json")
+	// No Accept-Language header set — must not panic, must return a valid response.
+	newRouter(h).ServeHTTP(w, req)
+	assert.Less(t, w.Code, 500)
+}
+
+// TestHandlerSession_AcceptLanguage_UnknownLocaleFallsBackToEnUS verifies that an
+// unrecognised locale (not in the allow-list) is silently replaced with "en-US".
+func TestHandlerSession_AcceptLanguage_UnknownLocaleFallsBackToEnUS(t *testing.T) {
+	h := buildHandlers(
+		fixtures.NewFakeSessionStore(), fixtures.NewFakeHandoffStore(),
+		fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeCatalog(),
+	)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/trial", trialBody(t, nil))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Language", "zh-CN") // not in allow-list
+	newRouter(h).ServeHTTP(w, req)
 	assert.Less(t, w.Code, 500)
 }
 
@@ -889,7 +935,7 @@ func TestHandlerSubmitTrial_PasswordHashFails_Returns500(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	om := fixtures.NewFakeOrgMembership("tid")
 	rp := fixtures.NewFakeRealmProvisioner("kc")
-	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk)
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	signupSvc := service.NewSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(),
 		&fixtures.FakeCaptchaVerifier{},
@@ -899,15 +945,16 @@ func TestHandlerSubmitTrial_PasswordHashFails_Returns500(t *testing.T) {
 		nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
-	sessionSvc := service.NewSessionService(fixtures.NewFakeSessionStore(), fixtures.NewFakeRateLimiter(), idgen, clk)
-	statusSvc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil)
+	sessionSvc := service.NewSessionService(fixtures.NewFakeSessionStore(), fixtures.NewFakeRateLimiter(), idgen, clk, 20)
+	statusSvc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil, 60)
 	h := inboundhttp.NewHandlers(
 		sessionSvc, signupSvc, nil, statusSvc, fixtures.NewFakeCatalog(),
 		"site-key",
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		domain.SlugRules{Pattern: `^[a-z0-9-]+$`, Min: 3, Max: 30},
-		2500*time.Millisecond, "2026-09",
+		2500*time.Millisecond, "2026-09", 1800, noopLogger{},
 	)
 
 	w := httptest.NewRecorder()

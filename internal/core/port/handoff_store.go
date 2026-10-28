@@ -23,4 +23,7 @@ type HandoffStore interface {
 	AcquireLock(ctx context.Context, signupID string) (token string, acquired bool, err error)
 	// ReleaseLock releases the lock only if the token matches (Lua script).
 	ReleaseLock(ctx context.Context, signupID, token string) error
+
+	// Ping checks Valkey connectivity. Used by /readyz.
+	Ping(ctx context.Context) error
 }

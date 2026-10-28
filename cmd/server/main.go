@@ -28,6 +28,11 @@ import (
 var buildVersion = "dev"
 
 func main() {
+	// fmt.Fprintf is the ONLY permitted bypass of the gincommon log sink — it is
+	// used here exclusively to surface errors that occur before the logger is
+	// initialised (i.e. logger.NewLogger failure itself). Every log statement
+	// after the logger is created must use log.Info/Warn/Error/Debug so that
+	// the OTel trace-ID injection and structured JSON format are preserved.
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "startup: %v\n", err)
 		os.Exit(1)
@@ -42,19 +47,32 @@ func run() error {
 	}
 
 	// ── 1. Logger — structured Zap via platform-gincommon ────────────────────
-	// All logs go through gincommon's sink: consistent JSON in prod, human-
-	// readable in dev/test. Never use the standard library log package after
-	// this point — it bypasses the OTel trace-ID injection and sampling.
+	// All logs pass through gincommon's sink: structured JSON in prod,
+	// human-readable in dev/test. Every log statement below this line must
+	// use the `log` variable — never fmt.Print*, standard library log, or
+	// any third-party logger. The gincommon logger injects the OTel trace ID
+	// into every record and applies the platform sampling policy.
 	log, err := logger.NewLogger(loggerEnv(appEnv))
 	if err != nil {
+		// Logger initialisation failed — fmt.Fprintf to stderr is the only
+		// option at this point. This is the single permitted exception.
 		return fmt.Errorf("init logger: %w", err)
 	}
 
 	// ── 2. Config (fail-fast before any connections) ──────────────────────────
 	cfg, err := config.Load()
 	if err != nil {
+		log.Error("startup.config.failed", map[string]interface{}{"err": err.Error()})
 		return fmt.Errorf("config: %w", err)
 	}
+	log.Info("startup.config.loaded", map[string]interface{}{
+		"env":          appEnv,
+		"version":      buildVersion,
+		"port":         cfg.AppPort,
+		"metrics_port": cfg.MetricsPort,
+		"captcha_skip": cfg.CaptchaSkip,
+		"paid_signup":  cfg.PaidSignupEnabled,
+	})
 
 	// ── 3. Platform observability — tracing + metrics ─────────────────────────
 	ginCfg := gincommon.Config{
@@ -81,8 +99,12 @@ func run() error {
 		Logger:       log,
 	})
 	if err != nil {
+		log.Error("startup.tracing.failed", map[string]interface{}{"err": err.Error()})
 		return fmt.Errorf("init tracing: %w", err)
 	}
+	log.Info("startup.tracing.init", map[string]interface{}{
+		"exporter": appEnv, // OTEL endpoint comes from env; log env as proxy
+	})
 
 	// Initialise gincommon's metrics registry once before the router so all
 	// bff_signup_* collectors share the same {domain, service, environment}
@@ -93,46 +115,58 @@ func run() error {
 	// the {domain, service, environment} identity is fixed. Mirrors the
 	// registration order used by iam-org-membership (cmd/server/main.go).
 	bffmetrics.Register(appEnv)
+	log.Info("startup.metrics.registered", map[string]interface{}{
+		"tier1_proposed": "platform_dependency_request_seconds",
+		"tier3_count":    9,
+	})
 
 	// ── 4. Valkey store adapters (wiring.go) ─────────────────────────────────
 	// buildValkeyStores calls valkeystore.NewClient which sets tight timeouts
 	// (100ms dial / 50ms read+write) matching iam-org-membership's pattern.
-	sessionStore, handoffStore, rateLimiter, rdb := buildValkeyStores(cfg.ValkeyURL)
+	sessionStore, handoffStore, rateLimiter, rdb := buildValkeyStores(cfg.ValkeyURL, time.Duration(cfg.SessionTTLSeconds)*time.Second)
 	defer func() { _ = rdb.Close() }()
 
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pingCancel()
 	if err := valkeystore.Ping(pingCtx, rdb); err != nil {
+		log.Error("startup.valkey.ping_failed", map[string]interface{}{"err": err.Error()})
 		return fmt.Errorf("valkey ping: %w", err)
 	}
+	log.Info("startup.valkey.ready", nil)
 
-	// ── 6. Outbound HTTP adapters (wiring.go) ─────────────────────────────────
+	// ── 5. Outbound HTTP adapters (wiring.go) ────────────────────────────────
 	rp := buildRealmProvisioner(cfg)
 	om := buildOrgMembership(cfg)
 	captchaVerifier := buildTurnstile(cfg)
+	if cfg.CaptchaSkip {
+		log.Warn("captcha.skip.active — CAPTCHA verification is disabled; never set CAPTCHA_SKIP=true in prod", map[string]interface{}{
+			"env": appEnv,
+		})
+	}
 	passwordHasher := buildPasswordHasher(cfg)
 	catalogClient := buildCatalog(cfg)
 	billingClient := buildBilling(cfg) // Phase 1.5: stub unless PAID_SIGNUP_ENABLED=true
 
-	// ── 7. Services ───────────────────────────────────────────────────────────
+	// ── 6. Services ───────────────────────────────────────────────────────────
 	clk := port.RealClock{}
 	idgen := &defaultIDGen{}
 
-	orchestrator := service.NewHandoffOrchestrator(handoffStore, rp, om, clk)
-	sessionSvc := service.NewSessionService(sessionStore, rateLimiter, idgen, clk)
+	orchestrator := service.NewHandoffOrchestrator(handoffStore, rp, om, clk, cfg.EligibilityTimeout())
+	sessionSvc := service.NewSessionService(sessionStore, rateLimiter, idgen, clk, cfg.SessionsPerIPPerHour)
 	signupSvc := service.NewSignupService(
 		handoffStore, rateLimiter, captchaVerifier, passwordHasher,
 		orchestrator, idgen, clk,
 		[]byte(cfg.HMACKey), cfg.ReservedSlugs, cfg.PasswordPolicy(),
 		cfg.CurrentTermsVersion,
+		cfg.SignupsPerIPPerHour, cfg.AttemptsPerEmailPerDay,
 	)
 	paidSignupSvc := service.NewPaidSignupService(
 		handoffStore, rateLimiter, captchaVerifier, passwordHasher,
-		billingClient, rp, om, idgen, clk,
+		billingClient, rp, om, orchestrator, idgen, clk,
 		[]byte(cfg.HMACKey), cfg.ReservedSlugs, cfg.PasswordPolicy(),
 		cfg.CurrentTermsVersion,
 	)
-	statusSvc := service.NewStatusService(handoffStore, rateLimiter, orchestrator, clk, cfg.ReservedSlugs)
+	statusSvc := service.NewStatusService(handoffStore, rateLimiter, orchestrator, clk, cfg.ReservedSlugs, cfg.PollsPerSessionPerMin)
 
 	// ── 8. HTTP handlers and router ───────────────────────────────────────────
 	handlers := httpadapter.NewHandlers(
@@ -143,6 +177,8 @@ func run() error {
 		cfg.SlugRules(),
 		cfg.RequestDeadline(),
 		cfg.CurrentTermsVersion,
+		cfg.SessionTTLSeconds,
+		log,
 	)
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
 		GinConfig:         ginCfg,
@@ -174,11 +210,12 @@ func run() error {
 
 	// ── 10. API server ────────────────────────────────────────────────────────
 	srv := &http.Server{
-		Addr:         ":" + cfg.AppPort,
-		Handler:      router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: time.Duration(cfg.RequestDeadlineMs+500) * time.Millisecond,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + cfg.AppPort,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      time.Duration(cfg.RequestDeadlineMs+500) * time.Millisecond,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// ── 11. Graceful shutdown ─────────────────────────────────────────────────
@@ -198,6 +235,7 @@ func run() error {
 
 	select {
 	case err := <-errCh:
+		log.Error("startup.server.failed", map[string]interface{}{"err": err.Error()})
 		return fmt.Errorf("server: %w", err)
 	case sig := <-quit:
 		log.Info("shutting down", map[string]interface{}{"signal": sig.String()})

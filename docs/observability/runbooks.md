@@ -35,7 +35,7 @@ Common starting points:
 **Meaning.** >5% of signups are failing at the provisioning stage for 10 minutes.
 
 **Triage.**
-1. Check `stage` and `reason` labels on `signup_bff_provisioning_failed_total`.
+1. Check `stage` and `reason` labels on `bff_signup_provisioning_failed_total`.
 2. `stage=realm_provisioner` → check RP health and Keycloak.
 3. `stage=org_membership` → check O&M health and Postgres.
 

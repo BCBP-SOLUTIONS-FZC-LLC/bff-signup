@@ -147,6 +147,27 @@ func (c *Config) Validate() error {
 	if c.OrgMembershipURL == "" {
 		return fmt.Errorf("ORG_MEMBERSHIP_BASE_URL must not be empty")
 	}
+	if c.PaidSignupEnabled && c.BillingURL == "" {
+		return fmt.Errorf("BILLING_BASE_URL must not be empty when PAID_SIGNUP_ENABLED=true")
+	}
+	if c.CaptchaSkip && c.AppEnv != "dev" && c.AppEnv != "test" && c.AppEnv != "local" {
+		return fmt.Errorf("CAPTCHA_SKIP must not be enabled outside dev/test/local environments (APP_ENV=%s)", c.AppEnv)
+	}
+	if c.RPTimeoutMs < 100 {
+		return fmt.Errorf("RP_TIMEOUT_MS must be >= 100ms (got %d)", c.RPTimeoutMs)
+	}
+	if c.I1TimeoutMs < 50 {
+		return fmt.Errorf("I1_TIMEOUT_MS must be >= 50ms (got %d)", c.I1TimeoutMs)
+	}
+	if c.EligibilityTimeoutMs < 50 {
+		return fmt.Errorf("ELIGIBILITY_TIMEOUT_MS must be >= 50ms (got %d)", c.EligibilityTimeoutMs)
+	}
+	if c.RequestDeadlineMs < 500 {
+		return fmt.Errorf("REQUEST_DEADLINE_MS must be >= 500ms (got %d)", c.RequestDeadlineMs)
+	}
+	if c.SessionTTLSeconds < 300 {
+		return fmt.Errorf("SESSION_TTL_SECONDS must be >= 300 seconds (got %d)", c.SessionTTLSeconds)
+	}
 	return nil
 }
 

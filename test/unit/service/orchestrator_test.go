@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +18,7 @@ func newOrchestrator(
 	rp *fixtures.FakeRealmProvisioner,
 	om *fixtures.FakeOrgMembership,
 ) *service.HandoffOrchestrator {
-	return service.NewHandoffOrchestrator(handoffs, rp, om, fixtures.NewFakeClock())
+	return service.NewHandoffOrchestrator(handoffs, rp, om, fixtures.NewFakeClock(), 10*time.Millisecond)
 }
 
 func allocatedHandoff() *domain.Handoff {

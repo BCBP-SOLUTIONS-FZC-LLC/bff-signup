@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with **bff-signup**, the
 
 ## What This Repo Is
 
-`bff-signup` is the platform's **public, unauthenticated tenant-onboarding intake** (Go module: `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`, Go 1.23). It serves the signup form's JSON API, enforces abuse controls (rate limit, CAPTCHA, CSRF), and runs the provisioning handoff.
+`bff-signup` is the platform's **public, unauthenticated tenant-onboarding intake** (Go module: `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`, Go 1.26.10). It serves the signup form's JSON API, enforces abuse controls (rate limit, CAPTCHA, CSRF), and runs the provisioning handoff.
 
 **Trial path (SB-2, Phase 1 — active):**
 1. Trial eligibility check → O&M `POST /internal/trial-eligibility` (CR-4)
@@ -38,11 +38,13 @@ make fmt-check       # Verify formatting (CI)
 make vet             # go vet ./...
 make lint            # golangci-lint
 make arch-lint       # go-arch-lint (layering rules)
+make metrics-lint    # metric naming + adapter instrumentation + registry guard
+make log-sink-lint   # enforce all logs/metrics/traces go through platform-gincommon
 make mod-verify      # go mod verify
 make vuln-check      # govulncheck
 
 make test            # unit + integration tests
-make test-ci         # with -race + coverage (CI)
+make test-ci         # with -race + coverage (CI, ≥ 95% gate)
 make test-unit       # unit tests only (no Docker)
 make test-integration # integration tests (requires Docker Valkey)
 make test-contract   # contract tests (RP-1, I-1, eligibility)
@@ -54,6 +56,7 @@ make build           # compile → bin/server
 make run             # go run ./cmd/server (sources .env)
 make cover           # coverage HTML report
 make cover-func      # coverage by function
+make swag            # regenerate docs/swagger/ from @annotations
 
 make docker-up       # start local Valkey (docker-compose)
 make docker-down     # stop local Valkey
@@ -62,7 +65,7 @@ make docker-reset    # stop + wipe + restart
 make helm-lint       # lint Helm chart
 make helm-template   # render chart with dev values
 
-make ci              # full local CI gate (tidy + fmt + vet + lint + test + build)
+make ci              # full local CI gate (tidy + fmt + vet + lint + arch-lint + metrics-lint + log-sink-lint + test-ci + build)
 ```
 
 ---
@@ -85,6 +88,16 @@ make ci              # full local CI gate (tidy + fmt + vet + lint + test + buil
 - **SB-INV-5:** CAPTCHA and rate limit run before any internal call or password hashing.
 - **SB-INV-8:** RP and I-1 carry identical `plan`, slug and name. `plan` is always `starter`/`pro`/`enterprise`, never `"trial"`.
 - **Phase 1.5:** `payment_token` is a Stripe browser token — no PAN ever reaches the BFF. Billing failure deletes the handoff (no orphaned charges). RP-2 Idempotency-Key format: `signup:<tenant_id>:rp2`.
+
+## Additional implementation invariants
+
+- **Rate limiter:** Fixed-window Lua script (`INCR` → `EXPIRE` only on count==1). Never use `INCR + EXPIRE` pipeline (that creates a sliding window).
+- **CSRF comparison:** Always use `subtle.ConstantTimeCompare` — not `!=` string comparison. Same for email HMAC (`hmacEqual()` in signup_service.go).
+- **CAPTCHA_SKIP:** Only valid when `APP_ENV ∈ {dev, test, local}`. `config.Validate()` rejects it in all other environments.
+- **Observability sink:** All logs via `log.Info/Warn/Error/Debug` (gincommon logger). All metrics via `metrics.*` helpers. All traces via gincommon middleware. Never use `fmt.Println`, standard `"log"` package, or raw `prometheus.New*` outside `internal/adapter/outbound/metrics/`. Enforced by `make log-sink-lint`.
+- **Dependency metrics:** Every outbound HTTP call must be wrapped with `metrics.ObserveDependencyCall(dependency, operation, duration, resp, err)` immediately after `httpClient.Do()`. Enforced by `make metrics-lint`.
+- **Session TTL:** Read from `SESSION_TTL_SECONDS` env var (default 1800). Hardcoding 1800 is a bug.
+- **Rate limits:** Read from `RATE_*` env vars (e.g., `RATE_SIGNUPS_PER_IP_PER_HOUR`). Hardcoding limits as constants is a bug.
 
 ---
 

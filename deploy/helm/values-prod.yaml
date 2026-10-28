@@ -6,6 +6,17 @@ env:
   REALM_PROVISIONER_BASE_URL: "http://iam-realm-provisioner.iam.svc.cluster.local:8080"
   ORG_MEMBERSHIP_BASE_URL: "http://iam-org-membership.iam.svc.cluster.local:8080"
   CAPTCHA_EXPECTED_HOSTNAME: "signup.bcbpsolutions.com"
+  # Explicitly declared in prod so changes to base values.yaml are visible here.
+  SESSION_TTL_SECONDS: "1800"
+  TERMS_CURRENT_VERSION: "2026-09"
+  SLUG_RESERVED: "admin,api,app,auth,billing,help,login,signup,status,support,trial,www,mail,static,cdn,internal,system,root,tenant,keycloak"
+  RATE_SIGNUPS_PER_IP_PER_HOUR: "3"
+  RATE_ATTEMPTS_PER_EMAIL_PER_DAY: "5"
+  RATE_SESSIONS_PER_IP_PER_HOUR: "20"
+  RATE_POLLS_PER_SESSION_PER_MIN: "60"
+  # CAPTCHA_SKIP must NEVER appear here — its absence is the prod safeguard.
+  # The config.Validate() guard (AppEnv=prod + CaptchaSkip=true → startup failure)
+  # is a second layer of defence if it ever arrives via a secret.
 
 existingSecret: "bff-signup-prod-secrets"
 

@@ -57,6 +57,7 @@ type PaidSignupService struct {
 	billing             port.BillingClient
 	rp                  port.RealmProvisioner
 	om                  port.OrgMembership
+	orchestrator        *HandoffOrchestrator
 	idgen               port.IDGenerator
 	clock               port.Clock
 	hmacKey             []byte
@@ -73,6 +74,7 @@ func NewPaidSignupService(
 	billing port.BillingClient,
 	rp port.RealmProvisioner,
 	om port.OrgMembership,
+	orchestrator *HandoffOrchestrator,
 	idgen port.IDGenerator,
 	clock port.Clock,
 	hmacKey []byte,
@@ -82,7 +84,8 @@ func NewPaidSignupService(
 ) *PaidSignupService {
 	return &PaidSignupService{
 		handoffs: handoffs, limiter: limiter, captcha: captcha, hasher: hasher,
-		billing: billing, rp: rp, om: om, idgen: idgen, clock: clock,
+		billing: billing, rp: rp, om: om, orchestrator: orchestrator,
+		idgen: idgen, clock: clock,
 		hmacKey: hmacKey, reserved: reserved, policy: policy,
 		currentTermsVersion: currentTermsVersion,
 	}
@@ -240,15 +243,7 @@ func (s *PaidSignupService) Submit(ctx context.Context, in PaidSignupInput) (*Pa
 	}
 
 	// ── 9. I-1: provision-tenant (inline with retries, same as trial path) ───
-	// Re-use the trial orchestrator's runI1 via a shared HandoffOrchestrator.
-	// The orchestrator is wired identically for both paths.
-	orchestrator := &HandoffOrchestrator{
-		handoffs: s.handoffs,
-		rp:       s.rp,
-		om:       s.om,
-		clock:    s.clock,
-	}
-	i1Result, err := orchestrator.runI1(ctx, h)
+	i1Result, err := s.orchestrator.runI1(ctx, h)
 	if err != nil {
 		if i1Result != nil && isDomainCause(err, domain.ErrSlugTaken) {
 			return &PaidSignupResult{
@@ -282,10 +277,11 @@ func (s *PaidSignupService) validate(in PaidSignupInput) error {
 	if err := domain.ValidateAdminName(in.AdminName); err != nil {
 		return err
 	}
-	if err := domain.ValidateAdminEmail(in.AdminEmail); err != nil {
+	normEmail := domain.NormaliseEmail(in.AdminEmail)
+	if err := domain.ValidateAdminEmail(normEmail); err != nil {
 		return err
 	}
-	if err := domain.ValidatePassword(in.Password, in.AdminEmail, s.policy); err != nil {
+	if err := domain.ValidatePassword(in.Password, normEmail, s.policy); err != nil {
 		return err
 	}
 	if !domain.ValidPlan(in.Plan) {

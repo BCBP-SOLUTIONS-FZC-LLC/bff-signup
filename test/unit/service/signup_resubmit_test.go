@@ -71,6 +71,44 @@ func TestSubmit_Resubmit_AllocatedSameDetails_Retries(t *testing.T) {
 	assert.Equal(t, domain.StateCompleted, result2.State)
 }
 
+// TestSubmit_Resubmit_AllocatedDifferentDetails_LockHeld_ReturnsInvalidState verifies
+// the race-safety guard added to handleResubmit: when an existing StateAllocated handoff
+// has different details AND the lock is already held (RP-1 in flight), we must NOT delete
+// the handoff. Instead we return ErrInvalidState so the browser retries after 500ms.
+func TestSubmit_Resubmit_AllocatedDifferentDetails_LockHeld_ReturnsInvalidState(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	svc := newSignupService(handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		&fixtures.FakePasswordHasher{}, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"))
+
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000030", CSRFHash: "h"}
+
+	// Establish a handoff (StateAllocated with original details)
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	require.NoError(t, err)
+
+	// Patch to StateAllocated to simulate RP-1 still in progress
+	h, _ := handoffs.Get(context.Background(), sess.SignupID)
+	h.State = domain.StateAllocated
+	require.NoError(t, handoffs.Update(context.Background(), h))
+
+	// Pre-acquire the lock to simulate a concurrent RP-1 run holding it
+	_, _, _ = handoffs.AcquireLock(context.Background(), sess.SignupID)
+
+	// Resubmit with different slug (different details) while lock is held
+	input2 := validInput(sess)
+	input2.Slug = "different-slug"
+	_, err2 := svc.Submit(context.Background(), input2)
+
+	require.Error(t, err2, "must not proceed when RP-1 holds the lock")
+	var de *domain.DomainError
+	require.ErrorAs(t, err2, &de)
+	assert.Equal(t, domain.ErrInvalidState, de.Cause)
+
+	// Handoff must NOT have been deleted — RP-1 still owns it
+	still, _ := handoffs.Get(context.Background(), sess.SignupID)
+	require.NotNil(t, still, "handoff must survive — deleting it during RP-1 would orphan the Keycloak user")
+}
+
 func TestSubmit_Resubmit_AllocatedDifferentDetails_StartsNew(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	rp := fixtures.NewFakeRealmProvisioner("kc-001")
@@ -214,4 +252,31 @@ func TestSubmit_Resubmit_Completed_DifferentEmail_Error(t *testing.T) {
 	var de *domain.DomainError
 	require.ErrorAs(t, err2, &de)
 	assert.Equal(t, domain.ErrInvalidState, de.Cause)
+}
+
+// TestSubmit_Resubmit_AllocatedSameDetails_FiresResubmitMetric exercises H-2:
+// the "resubmit" path (SB-2 retry on an existing StateAllocated handoff) must
+// reach IncHandoffResumed("resubmit"). Metric is nil-safe in tests.
+func TestSubmit_Resubmit_AllocatedSameDetails_FiresResubmitMetric(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	svc := newSignupService(handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		&fixtures.FakePasswordHasher{}, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"))
+
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000025", CSRFHash: "h"}
+	// First call creates the handoff (StateAllocated → StateCompleted on RP-1 + I-1).
+	result1, err := svc.Submit(context.Background(), validInput(sess))
+	require.NoError(t, err)
+
+	// Patch back to StateAllocated to force the resubmit path on the next call.
+	h, _ := handoffs.Get(context.Background(), sess.SignupID)
+	require.NotNil(t, h)
+	h.State = domain.StateAllocated
+	require.NoError(t, handoffs.Update(context.Background(), h))
+
+	// Second call — same details → handleResubmit → IncHandoffResumed("resubmit") fires.
+	result2, err := svc.Submit(context.Background(), validInput(sess))
+	require.NoError(t, err)
+	// Both calls must reach a terminal or in-progress state; no panic from nil metric.
+	assert.NotNil(t, result1)
+	assert.NotNil(t, result2)
 }

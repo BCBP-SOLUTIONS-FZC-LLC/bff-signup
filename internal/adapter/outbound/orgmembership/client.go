@@ -5,13 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
+
+// maxUpstreamBodyBytes caps the response body read from upstream services to
+// prevent unbounded memory use if a misbehaving or compromised service returns
+// an unexpectedly large body.
+const maxUpstreamBodyBytes = 64 * 1024
 
 const (
 	i1Path          = "/api/v1/internal/tenants"
@@ -74,7 +81,9 @@ func (c *Client) CheckSlugFree(ctx context.Context, slug string) error {
 	}
 	req.Header.Set("x-user-id", systemPrincipal)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	metrics.ObserveDependencyCall("org_membership", "slug_resolve", time.Since(start), resp, err)
 	if err != nil {
 		return nil // network error = couldn't check, proceed
 	}
@@ -85,7 +94,7 @@ func (c *Client) CheckSlugFree(ctx context.Context, slug string) error {
 	}
 
 	var out pub1Response
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&out); err != nil {
 		return nil // decode error = proceed
 	}
 
@@ -109,9 +118,11 @@ func (c *Client) CheckEligibility(ctx context.Context, emailHash string) error {
 	// still requires the header; uuid.Nil is the documented sentinel (router.go §444).
 	req.Header.Set("x-tenant-id", nilUUID)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	metrics.ObserveDependencyCall("org_membership", "trial_eligibility", time.Since(start), resp, err)
 	if err != nil {
-		return domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("eligibility service unreachable: %v", err))
+		return domain.NewError(domain.ErrDependencyUnavailable, "eligibility service temporarily unavailable")
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -120,7 +131,7 @@ func (c *Client) CheckEligibility(ctx context.Context, emailHash string) error {
 		return nil // eligible
 	case http.StatusConflict:
 		var ome omError
-		_ = json.NewDecoder(resp.Body).Decode(&ome)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&ome)
 		if ome.ErrorCode == "TRIAL_ALREADY_USED" {
 			return domain.NewError(domain.ErrTrialNotEligible, "this email has already been used for a trial")
 		}
@@ -148,23 +159,25 @@ func (c *Client) ProvisionTenant(ctx context.Context, req port.ProvisionTenantRe
 	httpReq.Header.Set("x-tenant-roles", "iam-system")
 	// No Idempotency-Key — O&M I-1 is idempotent by state on tenant_id (LLD §9.2)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
+	metrics.ObserveDependencyCall("org_membership", "provision_tenant", time.Since(start), resp, err)
 	if err != nil {
-		return nil, domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("I-1 unreachable: %v", err))
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "org membership service temporarily unavailable")
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	switch resp.StatusCode {
 	case http.StatusCreated, http.StatusOK:
 		var out port.ProvisionTenantResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&out); err != nil {
 			return nil, domain.NewError(domain.ErrInternal, "failed to decode I-1 response")
 		}
 		return &out, nil
 
 	case http.StatusConflict:
 		var ome omError
-		_ = json.NewDecoder(resp.Body).Decode(&ome)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&ome)
 		if ome.ErrorCode == "SLUG_ALREADY_TAKEN" {
 			return nil, domain.NewError(domain.ErrSlugTaken, "slug is already taken by another tenant")
 		}

@@ -7,6 +7,9 @@ FROM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d6
 
 WORKDIR /src
 
+# git is not included in the golang:alpine image but is required for private module auth
+RUN apk add --no-cache git
+
 # Cache module downloads separately from source
 COPY go.mod go.sum ./
 RUN --mount=type=secret,id=go_private_token \

@@ -1,6 +1,10 @@
 package middleware
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
 
 const CookieName = "sbff_sid"
 
@@ -16,6 +20,8 @@ func SessionCookie() gin.HandlerFunc {
 
 // SetSessionCookie writes the sbff_sid cookie onto the response (SB-1, LLD §10.4).
 func SetSessionCookie(c *gin.Context, sid string, maxAgeSecs int) {
+	// SetSameSite must be called before SetCookie; gin applies it to the next cookie written.
+	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(
 		CookieName,
 		sid,
@@ -25,8 +31,6 @@ func SetSessionCookie(c *gin.Context, sid string, maxAgeSecs int) {
 		true, // Secure
 		true, // HttpOnly
 	)
-	// SameSite=Strict requires manual header because gin uses SameSite=Lax by default
-	c.Header("Set-Cookie", c.Writer.Header().Get("Set-Cookie")+"; SameSite=Strict")
 }
 
 // SIDFromContext returns the session id from the gin context.

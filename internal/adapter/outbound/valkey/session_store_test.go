@@ -17,7 +17,7 @@ func newTestSessionStore(t *testing.T) (*SessionStore, *miniredis.Miniredis) {
 	mr := miniredis.RunT(t)
 	rdb := NewClient(mr.Addr()) // production constructor — identical to iam-org-membership's New(mr.Addr())
 	t.Cleanup(func() { _ = rdb.Close() })
-	return NewSessionStore(rdb), mr
+	return NewSessionStore(rdb, 30*time.Minute), mr
 }
 
 func testSession() *port.Session {

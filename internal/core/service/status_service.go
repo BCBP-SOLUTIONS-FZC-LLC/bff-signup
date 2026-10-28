@@ -8,15 +8,14 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
 
-const maxPollsPerMinute = 60
-
 // StatusService handles SB-3 and SB-4 (LLD §5.5).
 type StatusService struct {
-	handoffs     port.HandoffStore
-	limiter      port.RateLimiter
-	orchestrator *HandoffOrchestrator
-	clock        port.Clock
-	reserved     map[string]bool
+	handoffs       port.HandoffStore
+	limiter        port.RateLimiter
+	orchestrator   *HandoffOrchestrator
+	clock          port.Clock
+	reserved       map[string]bool
+	pollsPerMinute int
 }
 
 func NewStatusService(
@@ -25,17 +24,19 @@ func NewStatusService(
 	orchestrator *HandoffOrchestrator,
 	clock port.Clock,
 	reserved map[string]bool,
+	pollsPerMinute int,
 ) *StatusService {
-	return &StatusService{handoffs, limiter, orchestrator, clock, reserved}
+	return &StatusService{handoffs: handoffs, limiter: limiter, orchestrator: orchestrator, clock: clock, reserved: reserved, pollsPerMinute: pollsPerMinute}
 }
 
 // StatusResult is the SB-3 response payload.
 type StatusResult struct {
-	SignupID    string
-	State       domain.HandoffState
-	Action      string // "choose_slug" when State == action_required
-	PollAfterMs int    // set when State == provisioning
-	Message     string // "workspace_setting_up" when tenant_pending
+	SignupID        string
+	State           domain.HandoffState
+	Action          string   // "choose_slug" when State == action_required
+	PollAfterMs     int      // set when State == provisioning
+	Message         string   // "workspace_setting_up" when tenant_pending
+	SlugSuggestions []string // non-empty when ChangeSlug hit a conflict (SB-4, A-3)
 }
 
 // GetStatus handles SB-3 (LLD §5.5, §8.2).
@@ -51,14 +52,17 @@ func (s *StatusService) GetStatus(ctx context.Context, sessionSignupID, pathSign
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
 	}
-	if count > maxPollsPerMinute {
+	if count > int64(s.pollsPerMinute) {
 		metrics.IncRateLimited("poll") // LLD §11.2
 		return nil, domain.NewError(domain.ErrRateLimited, "too many status polls").
 			WithDetails(map[string]any{"retry_after_seconds": retryAfterSecs(resetAt), "scope": "poll"})
 	}
 
 	h, err := s.handoffs.Get(ctx, pathSignupID)
-	if err != nil || h == nil {
+	if err != nil {
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+	}
+	if h == nil {
 		return nil, domain.NewError(domain.ErrSignupNotFound, "signup not found")
 	}
 
@@ -71,6 +75,9 @@ func (s *StatusService) GetStatus(ctx context.Context, sessionSignupID, pathSign
 			result, err := s.orchestrator.ResumeI1(ctx, h)
 			if err == nil && result != nil {
 				h.State = result.State
+				if result.State == domain.StateCompleted {
+					metrics.IncProvisioningSucceeded("trial", "resume") // LLD §11.2
+				}
 			}
 		}
 	}
@@ -90,7 +97,10 @@ func (s *StatusService) ChangeSlug(ctx context.Context, sessionSignupID, pathSig
 	}
 
 	h, err := s.handoffs.Get(ctx, pathSignupID)
-	if err != nil || h == nil {
+	if err != nil {
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+	}
+	if h == nil {
 		return nil, domain.NewError(domain.ErrSignupNotFound, "signup not found")
 	}
 	if !h.CanChangeSlug() {
@@ -110,7 +120,13 @@ func (s *StatusService) ChangeSlug(ctx context.Context, sessionSignupID, pathSig
 	}
 
 	h.State = result.State
-	return stateToStatus(h), nil
+	if result.State == domain.StateCompleted {
+		metrics.IncProvisioningSucceeded("trial", "slug_change") // LLD §11.2
+	}
+	sr := stateToStatus(h)
+	sr.SlugSuggestions = result.SlugSuggestions
+	// Propagate ErrSlugTaken so the handler can build a proper 409 with suggestions (A-3).
+	return sr, err
 }
 
 func stateToStatus(h *domain.Handoff) *StatusResult {

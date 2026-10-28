@@ -5,12 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
+
+const maxUpstreamBodyBytes = 64 * 1024
 
 const (
 	rp1Path         = "/api/v1/internal/tenants/provision-trial"
@@ -57,16 +61,18 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 	httpReq.Header.Set("x-tenant-roles", "iam-system")
 	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
+	metrics.ObserveDependencyCall("realm_provisioner", "provision_trial", time.Since(start), resp, err)
 	if err != nil {
-		return nil, domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("RP-1 unreachable: %v", err))
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "realm provisioner temporarily unavailable")
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
 		var out port.ProvisionTrialResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&out); err != nil {
 			return nil, domain.NewError(domain.ErrInternal, "failed to decode RP-1 response")
 		}
 		return &out, nil
@@ -74,7 +80,7 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 	case http.StatusConflict:
 		// Branch on errorCode (RFC 9457) — never on detail (LLD §17.2)
 		var rpe rp1Error
-		_ = json.NewDecoder(resp.Body).Decode(&rpe)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&rpe)
 		switch rpe.ErrorCode {
 		case "EMAIL_ALREADY_REGISTERED":
 			return nil, domain.NewError(domain.ErrEmailUnavailable, "email already registered in Keycloak")
@@ -90,11 +96,11 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 
 	case http.StatusBadRequest:
 		var rpe rp1Error
-		_ = json.NewDecoder(resp.Body).Decode(&rpe)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&rpe)
 		// INVALID_REQUEST means a BFF bug (bad plan value etc.) — page, do not retry
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("RP-1 rejected request: %s", rpe.ErrorCode))
 
-	case http.StatusBadGateway, http.StatusServiceUnavailable:
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "RP-1 / Keycloak temporarily unavailable")
 
 	default:
@@ -122,23 +128,25 @@ func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRe
 	httpReq.Header.Set("x-tenant-roles", "iam-system")
 	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
+	metrics.ObserveDependencyCall("realm_provisioner", "provision_direct", time.Since(start), resp, err)
 	if err != nil {
-		return nil, domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("RP-2 unreachable: %v", err))
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "realm provisioner temporarily unavailable")
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
 		var out port.ProvisionDirectResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&out); err != nil {
 			return nil, domain.NewError(domain.ErrInternal, "failed to decode RP-2 response")
 		}
 		return &out, nil
 
 	case http.StatusConflict:
 		var rpe rp1Error
-		_ = json.NewDecoder(resp.Body).Decode(&rpe)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&rpe)
 		switch rpe.ErrorCode {
 		case "EMAIL_ALREADY_REGISTERED":
 			return nil, domain.NewError(domain.ErrEmailUnavailable, "email already registered in Keycloak")
@@ -153,10 +161,10 @@ func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRe
 
 	case http.StatusBadRequest:
 		var rpe rp1Error
-		_ = json.NewDecoder(resp.Body).Decode(&rpe)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&rpe)
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("RP-2 rejected request: %s", rpe.ErrorCode))
 
-	case http.StatusBadGateway, http.StatusServiceUnavailable:
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "RP-2 / Keycloak temporarily unavailable")
 
 	default:

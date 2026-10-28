@@ -3,8 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+	"math/rand"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
@@ -13,9 +14,9 @@ import (
 )
 
 const (
-	maxI1InlineRetries  = 2
-	resumeWindowSeconds = 900 // 15 min
-	maxSlugAttempts     = 5
+	maxI1InlineRetries = 2
+	resumeWindow       = 15 * time.Minute
+	maxSlugAttempts    = 5
 )
 
 // OrchestratorInput carries all the data needed for the eligibility → RP-1 → I-1 handoff.
@@ -29,10 +30,11 @@ type OrchestratorInput struct {
 
 // HandoffOrchestrator runs the provisioning sequence (LLD §8.1, §9.1).
 type HandoffOrchestrator struct {
-	handoffs port.HandoffStore
-	rp       port.RealmProvisioner
-	om       port.OrgMembership
-	clock    port.Clock
+	handoffs           port.HandoffStore
+	rp                 port.RealmProvisioner
+	om                 port.OrgMembership
+	clock              port.Clock
+	eligibilityTimeout time.Duration
 }
 
 func NewHandoffOrchestrator(
@@ -40,8 +42,9 @@ func NewHandoffOrchestrator(
 	rp port.RealmProvisioner,
 	om port.OrgMembership,
 	clock port.Clock,
+	eligibilityTimeout time.Duration,
 ) *HandoffOrchestrator {
-	return &HandoffOrchestrator{handoffs, rp, om, clock}
+	return &HandoffOrchestrator{handoffs: handoffs, rp: rp, om: om, clock: clock, eligibilityTimeout: eligibilityTimeout}
 }
 
 // OrchestratorResult reports the outcome of a full or partial run.
@@ -59,9 +62,16 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 
 	// ── Step E: trial eligibility (CR-4) ─────────────────────────────────────
 	if h.State == domain.StateAllocated {
-		if err := o.om.CheckEligibility(ctx, h.AdminEmailHMAC); err != nil {
-			_ = o.handoffs.Delete(ctx, h.SignupID)
-			return nil, err // ErrTrialNotEligible or ErrDependencyUnavailable
+		eligCtx, eligCancel := context.WithTimeout(ctx, o.eligibilityTimeout)
+		err := o.om.CheckEligibility(eligCtx, h.AdminEmailHMAC)
+		eligCancel()
+		if err != nil {
+			// Only delete when email is definitively ineligible (LLD §9.5).
+			// On ErrDependencyUnavailable keep the handoff so the user can retry.
+			if isDomainCause(err, domain.ErrTrialNotEligible) {
+				_ = o.handoffs.Delete(ctx, h.SignupID)
+			}
+			return nil, err
 		}
 	}
 
@@ -131,10 +141,11 @@ func (o *HandoffOrchestrator) ResumeI1(ctx context.Context, h *domain.Handoff) (
 	}
 
 	// Check 15-minute resume window
-	if o.clock.Now().Sub(h.CreatedAt).Seconds() > resumeWindowSeconds {
+	if o.clock.Now().Sub(h.CreatedAt) > resumeWindow {
 		h.State = domain.StateFailed
 		h.UpdatedAt = o.clock.Now()
 		_ = o.handoffs.Update(ctx, h)
+		metrics.IncProvisioningFailed("trial", "org_membership", "exhausted") // LLD §11.2
 		return &OrchestratorResult{State: domain.StateFailed}, nil
 	}
 
@@ -185,12 +196,13 @@ func (o *HandoffOrchestrator) runI1(ctx context.Context, h *domain.Handoff) (*Or
 		}
 		lastErr = err
 		if attempt < maxI1InlineRetries {
-			// Short backoff: 100ms, 250ms
-			backoff := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond}
+			// Short backoff with ±20% jitter to avoid thundering-herd on retry.
+			base := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond}[attempt]
+			jitter := time.Duration(rand.Int63n(int64(base / 5)))
 			select {
 			case <-ctx.Done():
 				goto exhaust
-			case <-time.After(backoff[attempt]):
+			case <-time.After(base + jitter):
 			}
 		}
 	}
@@ -237,7 +249,9 @@ func (o *HandoffOrchestrator) callI1Once(ctx context.Context, h *domain.Handoff)
 		return nil, err // 5xx / timeout → caller decides retry
 	}
 
-	_ = resp
+	if resp.TenantID != "" && resp.TenantID != h.TenantID {
+		return nil, domain.NewError(domain.ErrInternal, "I-1 returned unexpected tenant ID")
+	}
 	h.State = domain.StateCompleted
 	h.UpdatedAt = o.clock.Now()
 	_ = o.handoffs.Update(ctx, h)
@@ -258,8 +272,9 @@ func seedJSON(seed *port.HashedPasswordSeed) (string, error) {
 }
 
 func isDomainCause(err error, cause error) bool {
-	if de, ok := err.(*domain.DomainError); ok {
-		return de.Cause == cause
+	var de *domain.DomainError
+	if errors.As(err, &de) {
+		return errors.Is(de.Cause, cause)
 	}
-	return strings.Contains(err.Error(), cause.Error())
+	return false
 }

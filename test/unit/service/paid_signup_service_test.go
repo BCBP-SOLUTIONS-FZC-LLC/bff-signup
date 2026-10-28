@@ -26,9 +26,10 @@ func newPaidSignupSvc(
 ) *service.PaidSignupService {
 	clk := fixtures.NewFakeClock()
 	idgen := fixtures.NewFakeIDGenerator()
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	return service.NewPaidSignupService(
 		handoffs, limiter, captcha, &fixtures.FakePasswordHasher{},
-		billing, rp, om, idgen, clk,
+		billing, rp, om, orch, idgen, clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"),
 		nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
@@ -208,9 +209,12 @@ func TestPaidSubmit_RateLimiterIPError(t *testing.T) {
 
 func newPaidSignupSvcWithLimiter(handoffs *fixtures.FakeHandoffStore, limiter port.RateLimiter) *service.PaidSignupService {
 	clk := fixtures.NewFakeClock()
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	om := fixtures.NewFakeOrgMembership("tid")
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	return service.NewPaidSignupService(
 		handoffs, limiter, &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
-		fixtures.NewFakeBillingClient("sub"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeBillingClient("sub"), rp, om, orch,
 		fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},

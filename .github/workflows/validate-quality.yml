@@ -122,6 +122,9 @@ jobs:
       - name: Metrics registry lint (Proposed metrics must not be alerting/SLO sources)
         run: bash .github/scripts/metrics-registry-lint.sh
 
+      - name: Observability sink lint (all logs/metrics/traces must pass through platform-gincommon)
+        run: bash .github/scripts/check-log-sink.sh
+
       - name: Swagger staleness check
         run: bash .github/scripts/check-swagger-stale.sh
 

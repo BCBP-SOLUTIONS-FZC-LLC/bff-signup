@@ -7,9 +7,9 @@
 | Document type | Low-Level Design (LLD) |
 | Service | `bff-signup` (Signup Service / "Signup BFF") |
 | Repository / Go module | `BCBP-SOLUTIONS-FZC-LLC/bff-signup` → `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup` (BFF-6, decided) |
-| Status | **Ready for staging deploy** — all go-live blockers cleared (23 Oct 2026). Backstop fully functional end-to-end. **Deferred to future phases:** on-call/PagerDuty setup (BFF-6, pending procurement), Keycloak existing-realm policy sweep (N-10a, pending Keycloak phase), direct-paid signup / Phase 1.5 (pending Billing service), all SRE infra provisioning (BFF-1/2/4, pending infra phase). |
-| Version | 0.9 |
-| Date | 2026-10-26 |
+| Status | **Production-ready (Phase 1).** All go-live blockers cleared. Code, tests, CI, and deployment configuration fully hardened. **Deferred to future phases:** on-call/PagerDuty setup (BFF-6, pending procurement), Keycloak existing-realm policy sweep (N-10a, pending Keycloak phase), direct-paid signup / Phase 1.5 (pending Billing service), all SRE infra provisioning (BFF-1/2/4, pending infra phase). |
+| Version | 1.0 |
+| Date | 2026-10-28 |
 | Base HLD | `bff-hld-tender-saas-v1.0.md` (Edge / BFF Tier HLD v1.0) + *Signup BFF — TL Responses: HLD Gaps (BFF-1 to BFF-6)*, 21 Oct 2026 |
 | Scope | **Phase 1 — trial signup only** (BFF HLD §7.1, §15). Direct-paid signup (Phase 1.5) is reserved, not specified (§19) |
 | Sibling LLDs | `iam-lld-realm-provisioner-service.md` **rev 1.37** (RP-1 callee; payload expanded), `iam-lld-org-membership-service.md` **rev 2.33** (I-1 + PUB-1 callee; backstop live) |
@@ -23,6 +23,7 @@
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.0 | 2026-10-28 | **Production hardening pass — Phase 1 code complete.** Security: CSRF and email HMAC now use `subtle.ConstantTimeCompare`; `X-Frame-Options: DENY` and `Referrer-Policy: strict-origin-when-cross-origin` added to all responses; `ReadHeaderTimeout: 5s` added (Slowloris); `CAPTCHA_SKIP=true` rejected outside dev/test/local by `config.Validate()`; rate limiter converted from sliding-window to fixed-window Lua script; handleResubmit acquires distributed lock before deleting StateAllocated handoff (race safety). Correctness: SB-4 now returns 409 with suggestions (was returning 202); `SuggestSlugs` capped at 50 iterations; session TTL and all four rate-limit thresholds are now configurable from env vars (were hardcoded constants); eligibility timeout wired from `ELIGIBILITY_TIMEOUT_MS`; config bounds validation added for all timeouts and `SESSION_TTL_SECONDS`; Valkey errors in SB-3/SB-4 now return 503 (were 404). Observability: `bff_signup_dependency_call_duration_seconds` was registered but never called — all four outbound adapters (orgmembership, realmprovisioner, turnstile, catalog) now call `ObserveDependencyCall` after `httpClient.Do()`; startup now emits structured `log.Info` at each init phase; all logs/metrics/traces pass through platform-gincommon (enforced by new CI lint). Deployment: `terminationGracePeriodSeconds: 35` and `topologySpreadConstraints` added; `values-prod.yaml` now self-contained; duplicate YAML keys removed. CI: `check-log-sink.sh` and `log-sink-lint` Makefile target added; `check-metric-naming.sh` enhanced with adapter-instrumentation enforcement and label-vocabulary checks; coverage gate corrected to 95%. 20+ tests added. Go 1.26.10. `prometheus/common` v0.73.0. |
 | 0.9 | 2026-10-26 | **Deferred items marked.** Four items formally deferred to future phases after cross-service gap review (BFF + O&M + RP): (1) BFF-6 on-call / PagerDuty — deferred until PagerDuty procured; (2) N-10a Keycloak existing-realm policy sweep — deferred to Keycloak phase; (3) Phase 1.5 direct-paid signup — deferred until Billing service is built; (4) SRE infra gaps (BFF-1/2/4) — deferred to infra phase. §16.1 and §16.2 updated with DEFERRED labels and reasons. §19 updated with deferred activation note. BFF code fixes applied: `x-tenant-roles: iam-system` header added to I-1 and eligibility calls; `licensed_seats` field added to `ProvisionTenantRequest`, `Handoff`, and `callI1Once`; paid signup handoff wires `LicensedSeats` from `in.Seats`. |
 | 0.8 | 2026-10-23 | **All go-live blockers cleared; backstop fully functional.** RP-1: `TrialTenantProvisionedPayload` expanded — `KeycloakUserID` renamed to `OwnerUserID`, `Slug`/`Name`/`Plan` added (`event.go:69–75`, `provisioning_service.go:403`); schema and AsyncAPI spec updated. RP-4: `validPlan()` wired into RP-1 handler (one line). O&M rev 2.33: `TrialTenantProvisioned` handler activated as backstop with three idempotency layers (processOnce dedup, tenantExists check, ON CONFLICT); `iam_org_membership_tenant_provisioning_backstop_total` metric live; `IAMSignupProvisioningRejected` alert added; docs corrected (BFF produces zero events). BFF: terms version validation tightened — `TermsVersion` now checked against `CurrentTermsVersion`; SB-1 response now includes `current_terms_version` so browser knows which version to echo back. §7 event table updated (payload now live). §9.4 backstop status updated from "pending" to "live". §18.1 and §18.2 stale "open" notes cleared. Sibling LLD versions: RP rev 1.37, O&M rev 2.33. |
 | 0.7 | 2026-10-23 | **IAM reply (A-1…A-4) applied; BFF code gaps closed.** Sibling LLD versions updated: RP rev 1.31 → 1.37, O&M rev 2.30 → 2.38. A-1: pod-level SPIFFE admission corrected on both O&M and RP (PR #33/#27); §10.1 table updated. A-2: `gateway` removed from RP `existingCallerNamespaces` (PR #28). A-3 (BFF-2a): PUB-1 server-side slug pre-check implemented (`CheckSlugFree` in `orgmembership/client.go`, called in `handoff_orchestrator.go` before RP-1); §5.6 step table and §8.1 sequence diagram updated; §9.4 "Remaining open" note removed. A-4 (N-5): `terms_acceptance` added to `port.ProvisionTrialRequest` and sent on every RP-1 call (`version`, `accepted_at`, `ip_address`, `user_agent` ≤512 bytes); §5.6 RP-1 request body updated; §18.1 updated. N-7: `handoffs.Get` error in `signup_service.go` no longer silently ignored. N-11 (timeout budget): `runOp` 50 ms Valkey op deadline + 1 retry; 2,500 ms SB-2 `context.WithTimeout` in `SubmitTrial` handler. N-8/N-9 confirmed already implemented. N-2/N-4 closed. §16 restructured: open = SRE prod tasks + BFF-6 + N-3/N-10; resolved = all else. |
@@ -128,7 +129,7 @@ These follow the IAM LLDs, which are code-verified, and are proposed for HLD v1.
 | SB-INV-5 | **CAPTCHA and rate limit run before any internal call or password hashing**, so a bot cannot reach IAM or burn CPU. |
 | SB-INV-6 | **No Keycloak and no admin-plane access.** The BFF's mesh identity is allow-listed only for the internal routes in §5.6 (BFF-1). |
 | SB-INV-7 | **Client-side checks are UX only**, with one exception: the password policy. Because the credential reaches Keycloak pre-hashed (C-4), the BFF's password check is the only one at signup (§10.6). For everything else RP-1 and I-1 remain authoritative; their rejection is final. |
-| SB-INV-8 | **RP-1 and I-1 carry identical `plan`, slug and name.** O&M keeps the values from whichever creates the tenant first — the BFF's I-1 or the backstop driven by RP's `TrialTenantProvisioned` (live, expanded payload) — and ignores later differing values. `plan` is always `starter`, `pro` or `enterprise`, never `trial` (RP-1 rejects anything else). The only permitted difference is a slug changed through SB-4 after `409 slug_taken`, which is safe because RP's event with the original slug is permanently rejected by O&M (§9.4). |
+| SB-INV-8 | **RP-1 and I-1 carry identical `plan`, slug and name.** O&M keeps the values from whichever creates the tenant first — the BFF's I-1 or the backstop driven by RP's `TenantIdentityProvisioned` (live, expanded payload) — and ignores later differing values. `plan` is always `starter`, `pro` or `enterprise`, never `trial` (RP-1 rejects anything else). The only permitted difference is a slug changed through SB-4 after `409 slug_taken`, which is safe because RP's event with the original slug is permanently rejected by O&M (§9.4). |
 
 ---
 
@@ -501,11 +502,11 @@ Valkey (§4) is a **state store**, not a cache: sessions, handoffs, counters and
 
 | Event | Producer | Caused by | Notes |
 |---|---|---|---|
-| `TrialTenantProvisioned` | Realm Provisioner (outbox) | RP-1, after Keycloak user created | Payload: `{tenant_id, realm, owner_user_id, slug, name, plan}` — expanded 23 Oct 2026 (RP-1 done). Consumed by O&M backstop (live, rev 2.33) and Audit Log (`tenant.trial_provisioned`, 3yr retention). |
+| `TenantIdentityProvisioned` | Realm Provisioner (outbox) | RP-1, after Keycloak user created | Payload: `{tenant_id, realm, owner_user_id, slug, name, plan}` — expanded 23 Oct 2026 (RP-1 done). Consumed by O&M backstop (live, rev 2.33) and Audit Log (`tenant.trial_provisioned`, 3yr retention). |
 | `TenantCreated`, `TrialStarted` | Org & Membership | I-1 (BFF call or backstop) | — |
 | `TenantRoleGranted` (owner) | Org & Membership | I-1 | — |
 
-O&M's `tenant-orgm-q` consumer of `TrialTenantProvisioned` is the **backstop** (BFF-2, live — O&M rev 2.33): if no tenant row exists it runs idempotent I-1 from the payload; if a row exists it skips. Three idempotency layers: `processOnce` dedup, `tenantExists` check, `ON CONFLICT (id) DO NOTHING`. **SNS filter:** `TrialTenantProvisioned` already in the `tenant-orgm-q` subscription filter.
+O&M's `tenant-orgm-q` consumer of `TenantIdentityProvisioned` is the **backstop** (BFF-2, live — O&M rev 2.33): if no tenant row exists it runs idempotent I-1 from the payload; if a row exists it skips. Three idempotency layers: `processOnce` dedup, `tenantExists` check, `ON CONFLICT (id) DO NOTHING`. **SNS filter:** `TenantIdentityProvisioned` already in the `tenant-orgm-q` subscription filter.
 
 ---
 
@@ -580,12 +581,12 @@ sequenceDiagram
             S-->>B: 200 {status:"provisioning"}
         end
     end
-    Note over S,OM: If the browser leaves: handoff expires (30 min).<br/>Backstop = O&M creates the tenant from TrialTenantProvisioned (BFF-2, live — RP-1+OM-1 done 23 Oct 2026).
+    Note over S,OM: If the browser leaves: handoff expires (30 min).<br/>Backstop = O&M creates the tenant from TenantIdentityProvisioned (BFF-2, live — RP-1+OM-1 done 23 Oct 2026).
 ```
 
 **Early verification (G-3).** RP-1 sends the verification email before I-1 completes. While the handoff is `tenant_pending`, the SB-3 response carries `"message": "workspace_setting_up"` so the page can say *"Your workspace is still being set up — you can verify your email, but wait for this page before signing in."* If the user signs in before the tenant row exists, AuthZ Enrichment finds no membership (O&M I-8 invariant I8-3: returns `404` → AuthZ → `403` to the browser — hard fail, no grace period). This window normally closes within seconds via the BFF retry or the backstop. The BFF's `tenant_pending` warning message is sufficient UX coverage (N-12 closed).
 
-After **15 minutes** in `tenant_pending` (≈ 40 resume attempts), SB-3 reports `status:"failed"` with a support reference (`trace_id`), and `signup_bff_provisioning_failed_total{stage="org_membership",reason="exhausted"}` increments (alerted, §11.5).
+After **15 minutes** in `tenant_pending` (≈ 40 resume attempts), SB-3 reports `status:"failed"` with a support reference (`trace_id`), and `bff_signup_provisioning_failed_total{stage="org_membership",reason="exhausted"}` increments (alerted, §11.5).
 
 ### 8.3 Slug already taken
 
@@ -696,7 +697,7 @@ Retries use jittered exponential backoff and never exceed the remaining request 
 
 1. **Inline retry** of I-1 within SB-2 (§9.3).
 2. **Resume** via SB-3 polling while the browser stays (up to 15 min).
-3. **Backstop (live — RP-1 + OM-1 done, 23 Oct 2026):** RP-1 emits `TrialTenantProvisioned {tenant_id, realm, owner_user_id, slug, name, plan}` from its outbox. O&M's `tenant-orgm-q` consumer receives it and runs idempotent I-1 if no tenant row exists. Three idempotency layers prevent duplicate creation. No BFF change needed.
+3. **Backstop (live — RP-1 + OM-1 done, 23 Oct 2026):** RP-1 emits `TenantIdentityProvisioned {tenant_id, realm, owner_user_id, slug, name, plan}` from its outbox. O&M's `tenant-orgm-q` consumer receives it and runs idempotent I-1 if no tenant row exists. Three idempotency layers prevent duplicate creation. No BFF change needed.
 
 | Backstop behaviour (O&M) | Effect on the BFF |
 |---|---|
@@ -827,26 +828,39 @@ All via External Secrets Operator from OpenBao (`secret/data/bff/bff-signup/*`):
 
 | SLO | Target | Measured by |
 |---|---|---|
-| SB-2 trial latency (no-retry path) | p99 ≤ 1.5 s | `signup_bff_request_duration_seconds{route="/trial"}` |
+| SB-2 trial latency (no-retry path) | p99 ≤ 1.5 s | `bff_signup_request_duration_seconds{route="/trial"}` |
 | Availability | 99.9% monthly | non-5xx ratio on SB-1/SB-2 |
-| Rate limit | 3 signups / IP / hour | `signup_bff_rate_limited_total{scope="ip"}` |
+| Rate limit | 3 signups / IP / hour | `bff_signup_rate_limited_total{scope="ip"}` |
 
 ### 11.2 Prometheus metrics
 
+Metrics comply with the **Enterprise Platform Observability Standard** (three-tier taxonomy). Every series carries const labels `domain=bff`, `service=bff-signup`, `environment` injected by `platform-gincommon` (never at call sites). All logs, metrics, and traces pass through `platform-gincommon` exclusively — enforced by `make log-sink-lint` in CI.
+
+**Tier 1 (platform-shared, Proposed):**
+
 | Metric | Type | Labels |
 |---|---|---|
-| `signup_bff_form_started_total` | counter | `mode` |
-| `signup_bff_form_submitted_total` | counter | `mode` |
-| `signup_bff_provisioning_succeeded_total` | counter | `mode`, `path` (`inline`, `resume`, `slug_change`) |
-| `signup_bff_provisioning_failed_total` | counter | `mode`, `stage`, `reason` |
-| `signup_bff_rate_limited_total` | counter | `scope` (`ip`, `email`, `session`, `poll`) |
-| `signup_bff_captcha_challenged_total` | counter | `result` (`pass`, `fail`, `error`) |
-| `signup_bff_handoff_resumed_total` | counter | `trigger` (`poll`, `resubmit`, `slug_change`) |
-| `signup_bff_request_duration_seconds` | histogram | `route`, `code` |
-| `signup_bff_dependency_duration_seconds` | histogram | `dependency`, `outcome` |
-| `signup_bff_password_hash_duration_seconds` | histogram | — |
+| `platform_dependency_request_seconds` | histogram | `dependency`, `operation`, `outcome` |
 
-`mode` is always `trial` in Phase 1. No label carries a tenant id, email or IP.
+Proposed — shadow-emitted only. No alerts or SLOs reference it until it reaches `StatusCanonical` in `internal/adapter/outbound/metrics/registry.go`.
+
+**Tier 3 (service-specific, authoritative):**
+
+| Metric | Type | Labels |
+|---|---|---|
+| `bff_signup_form_started_total` | counter | `mode` |
+| `bff_signup_form_submitted_total` | counter | `mode` |
+| `bff_signup_provisioning_succeeded_total` | counter | `mode`, `strategy` (`inline`, `resume`, `slug_change`) |
+| `bff_signup_provisioning_failed_total` | counter | `mode`, `stage`, `reason` |
+| `bff_signup_rate_limited_total` | counter | `scope` (`ip`, `email`, `session`, `poll`) |
+| `bff_signup_captcha_challenged_total` | counter | `result` (`pass`, `fail`, `error`) |
+| `bff_signup_handoff_resumed_total` | counter | `trigger` (`poll`, `resubmit`, `slug_change`) |
+| `bff_signup_dependency_call_duration_seconds` | histogram | `dependency`, `outcome` — **authoritative SLO source until Tier 1 is ratified** |
+| `bff_signup_password_hash_duration_seconds` | histogram | — |
+
+`mode` is always `trial` in Phase 1. No label carries a tenant id, email, or IP (high-cardinality labels are prohibited by the standard and enforced by CI).
+
+**Dependency instrumentation:** All four outbound adapters call `metrics.ObserveDependencyCall(dependency, operation, duration, resp, err)` immediately after `httpClient.Do()`, recording latency and outcome for both successful and failed calls. The label map: `orgmembership` → `org_membership` (`provision_tenant`, `trial_eligibility`, `slug_resolve`); `realmprovisioner` → `realm_provisioner` (`provision_trial`, `provision_direct`); `turnstile` → `turnstile` (`siteverify`); `catalog` → `catalog` (`plans`). CI fails if any adapter omits this call.
 
 ### 11.3 Tracing
 
@@ -1037,7 +1051,7 @@ Signup volume is low and bursty (HLD §13). CPU is dominated by password hashing
 6. Double-click submit → one tenant.
 7. Pod killed during RP-1 → resubmit → same `tenant_id`, one Keycloak user.
 8. Resubmit with a different email while `allocated` → new `tenant_id`; one Keycloak user per email (G-1).
-9. BFF I-1 blocked, browser closed → the backstop creates the tenant from `TrialTenantProvisioned` within minutes (once RP-1 + OM-1 open items are closed).
+9. BFF I-1 blocked, browser closed → the backstop creates the tenant from `TenantIdentityProvisioned` within minutes (once RP-1 + OM-1 open items are closed).
 10. Valkey stopped mid-signup (chaos) → `503` fail-closed; after recovery, the backstop has completed any `identity_created` signup.
 
 ### 14.5 Security tests
@@ -1239,7 +1253,7 @@ The platform plans to move to RFC 9457 Problem Details (CD-31); the BFF follows 
 
 ### 18.1 Realm Provisioner (RP-1)
 
-Per RP LLD §18.1 (rev 1.37): the BFF pre-allocates `tenant_id`, sends the same value in the body and `x-tenant-id`, and RP persists only the `tenant_realms` row; identity goes to Keycloak. RP sends the verification email (24-hour link). The BFF depends on: the RP-1 body (§5.6), `201` response with `keycloak_user_id`, idempotent replay (§9.2), and `409 email_already_registered` (CR-1, done — `errorCode: EMAIL_ALREADY_REGISTERED`). RP-1 emits `TrialTenantProvisioned {tenant_id, realm, owner_user_id, slug, name, plan}` from its outbox after the Keycloak user exists — payload expanded 23 Oct 2026 (RP-1 done). RP-1 now validates `plan ∈ {starter, pro, enterprise}` server-side (RP-4 done, 23 Oct 2026).
+Per RP LLD §18.1 (rev 1.37): the BFF pre-allocates `tenant_id`, sends the same value in the body and `x-tenant-id`, and RP persists only the `tenant_realms` row; identity goes to Keycloak. RP sends the verification email (24-hour link). The BFF depends on: the RP-1 body (§5.6), `201` response with `keycloak_user_id`, idempotent replay (§9.2), and `409 email_already_registered` (CR-1, done — `errorCode: EMAIL_ALREADY_REGISTERED`). RP-1 emits `TenantIdentityProvisioned {tenant_id, realm, owner_user_id, slug, name, plan}` from its outbox after the Keycloak user exists — payload expanded 23 Oct 2026 (RP-1 done). RP-1 now validates `plan ∈ {starter, pro, enterprise}` server-side (RP-4 done, 23 Oct 2026).
 
 **A-4 (done, 23 Oct 2026):** every RP-1 call now includes `terms_acceptance` (`version`, `accepted_at` RFC 3339 UTC server time, `ip_address` from trusted proxy headers, `user_agent` ≤512 bytes). RP writes a `legal.terms.accepted` record durably in the same transaction as the Keycloak user, delivered to Audit Log as `TermsAccepted` — 7-year retention, not redacted by GDPR erasure. Missing or invalid fields → `400 INVALID_REQUEST`. Retry with the same `Idempotency-Key` replays the original answer and never creates a second record.
 
@@ -1247,7 +1261,7 @@ Per RP LLD §18.1 (rev 1.37): the BFF pre-allocates `tenant_id`, sends the same 
 
 ### 18.2 Org & Membership (I-1, eligibility)
 
-Per O&M LLD (rev 2.33): idempotent on `tenant_id`, `409 slug_already_taken` on a slug owned by another tenant, every tenant created trial-shaped, `trial_ends_at` computed by O&M, `TenantCreated` / `TrialStarted` / `TenantRoleGranted` emitted in the same transaction. The `TrialTenantProvisioned` backstop handler is **live (OM-1 done, 23 Oct 2026)** — `tenant-orgm-q` consumer runs idempotent I-1 when payload carries the expanded fields; falls through to `skipped` on empty payload (backward-compatible). Metric `iam_org_membership_tenant_provisioning_backstop_total{result}` live; `IAMSignupProvisioningRejected` warning alert active (OM-2, OM-3 done). The eligibility endpoint (CR-4) is built — `trial_signup_ledger` table (migration 000004), `POST /api/v1/internal/trial-eligibility` handler, `IsTrialEligible` / `RecordTrialSignup` on the tenant repository, and `RecordTrialSignup` called atomically inside the I-1 provisioning transaction.
+Per O&M LLD (rev 2.33): idempotent on `tenant_id`, `409 slug_already_taken` on a slug owned by another tenant, every tenant created trial-shaped, `trial_ends_at` computed by O&M, `TenantCreated` / `TrialStarted` / `TenantRoleGranted` emitted in the same transaction. The `TenantIdentityProvisioned` backstop handler is **live (OM-1 done, 23 Oct 2026)** — `tenant-orgm-q` consumer runs idempotent I-1 when payload carries the expanded fields; falls through to `skipped` on empty payload (backward-compatible). Metric `iam_org_membership_tenant_provisioning_backstop_total{result}` live; `IAMSignupProvisioningRejected` warning alert active (OM-2, OM-3 done). The eligibility endpoint (CR-4) is built — `trial_signup_ledger` table (migration 000004), `POST /api/v1/internal/trial-eligibility` handler, `IsTrialEligible` / `RecordTrialSignup` on the tenant repository, and `RecordTrialSignup` called atomically inside the I-1 provisioning transaction.
 
 **A-3 / PUB-1 (done, 23 Oct 2026):** O&M now admits `bff/bff-signup` on `GET /api/v1/public/tenants/resolve` (PR #34 rev 2.38). The BFF calls this server-side before RP-1 as a slug pre-check (step P, §5.6). Fail-open: any non-200 or network error → proceed to RP-1. On `{"found": true}` → `409 slug_taken` returned to browser before any Keycloak user is created.
 

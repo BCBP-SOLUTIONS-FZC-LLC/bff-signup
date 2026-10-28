@@ -48,7 +48,7 @@ func valkeyClient(t *testing.T) *redis.Client {
 
 func TestSessionStore_CreateGetDelete(t *testing.T) {
 	rdb := valkeyClient(t)
-	store := valkey.NewSessionStore(rdb)
+	store := valkey.NewSessionStore(rdb, 30*time.Minute)
 	ctx := context.Background()
 
 	sess := &port.Session{
@@ -195,7 +195,7 @@ func TestPing_ReturnsNilWhenReachable(t *testing.T) {
 
 func TestSessionStore_Refresh(t *testing.T) {
 	rdb := valkeyClient(t)
-	store := valkey.NewSessionStore(rdb)
+	store := valkey.NewSessionStore(rdb, 30*time.Minute)
 	ctx := context.Background()
 
 	sess := &port.Session{

@@ -25,6 +25,14 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
+// routerNoopLogger is a silent logger for router tests satisfying loggerAlias.
+type routerNoopLogger struct{}
+
+func (routerNoopLogger) Debug(_ string, _ map[string]interface{}) {}
+func (routerNoopLogger) Info(_ string, _ map[string]interface{})  {}
+func (routerNoopLogger) Warn(_ string, _ map[string]interface{})  {}
+func (routerNoopLogger) Error(_ string, _ map[string]interface{}) {}
+
 func TestNewRouter_HealthzReadyzAndPaidDisabled(t *testing.T) {
 	// gincommon requires a Domain in its registry; "workflow" is valid.
 	// OBSERVABILITY_DOMAIN overrides Config.Domain when Config.Domain is empty.
@@ -37,22 +45,23 @@ func TestNewRouter_HealthzReadyzAndPaidDisabled(t *testing.T) {
 	idgen := fixtures.NewFakeIDGenerator()
 	handoffs := fixtures.NewFakeHandoffStore()
 	orch := service.NewHandoffOrchestrator(handoffs,
-		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
 
-	sessionSvc := service.NewSessionService(sessions, limiter, idgen, clk)
+	sessionSvc := service.NewSessionService(sessions, limiter, idgen, clk, 20)
 	signupSvc := service.NewSignupService(
 		handoffs, limiter, &routerFakeCaptcha{}, &routerFakeHasher{},
 		orch, idgen, clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
-	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil)
+	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil, 60)
 	h := NewHandlers(sessionSvc, signupSvc, nil, statusSvc, &routerFakeCatalog{},
 		"site-key",
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		domain.SlugRules{Pattern: `^[a-z0-9-]+$`, Min: 3, Max: 30},
-		2500*time.Millisecond, "2026-09",
+		2500*time.Millisecond, "2026-09", 1800, routerNoopLogger{},
 	)
 
 	r := NewRouter(RouterConfig{
@@ -79,6 +88,55 @@ func TestNewRouter_HealthzReadyzAndPaidDisabled(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w3.Code)
 }
 
+// pingFailStore wraps FakeHandoffStore and returns an error from Ping.
+type pingFailStore struct{ *fixtures.FakeHandoffStore }
+
+func (s *pingFailStore) Ping(_ context.Context) error { return errors.New("valkey down") }
+
+// TestNewRouter_ReadyzPingFails_Returns503 exercises the /readyz → 503 path (B-1 fix).
+func TestNewRouter_ReadyzPingFails_Returns503(t *testing.T) {
+	t.Setenv("OBSERVABILITY_DOMAIN", "bff")
+	t.Setenv("APP_ENV", "test")
+
+	sessions := fixtures.NewFakeSessionStore()
+	limiter := fixtures.NewFakeRateLimiter()
+	clk := fixtures.NewFakeClock()
+	idgen := fixtures.NewFakeIDGenerator()
+	handoffs := &pingFailStore{fixtures.NewFakeHandoffStore()}
+	orch := service.NewHandoffOrchestrator(handoffs,
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
+
+	sessionSvc := service.NewSessionService(sessions, limiter, idgen, clk, 20)
+	signupSvc := service.NewSignupService(
+		handoffs, limiter, &routerFakeCaptcha{}, &routerFakeHasher{},
+		orch, idgen, clk,
+		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
+		"2026-09",
+		3, 5,
+	)
+	statusSvc := service.NewStatusService(handoffs, limiter, orch, clk, nil, 60)
+	h := NewHandlers(sessionSvc, signupSvc, nil, statusSvc, &routerFakeCatalog{},
+		"site-key",
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
+		domain.SlugRules{Pattern: `^[a-z0-9-]+$`, Min: 3, Max: 30},
+		2500*time.Millisecond, "2026-09", 1800, routerNoopLogger{},
+	)
+
+	r := NewRouter(RouterConfig{
+		GinConfig:      gincommon.Config{ServiceName: "bff-signup-test"},
+		Handlers:       h,
+		SessionService: sessionSvc,
+		Valkey:         handoffs,
+		PublicHost:     "signup.example.com",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Contains(t, w.Body.String(), "valkey")
+}
+
 func TestNewRouter_DocsEnabledAndPaidEnabled(t *testing.T) {
 	// Second NewRouter call must reuse the same service identity ("bff-signup-test")
 	// established by TestNewRouter_HealthzReadyzAndPaidDisabled — metrics are global/Once.
@@ -90,14 +148,14 @@ func TestNewRouter_DocsEnabledAndPaidEnabled(t *testing.T) {
 	idgen := fixtures.NewFakeIDGenerator()
 	handoffs := fixtures.NewFakeHandoffStore()
 	orch := service.NewHandoffOrchestrator(handoffs,
-		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
-	sessionSvc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), idgen, clk)
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
+	sessionSvc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), idgen, clk, 20)
 	signupSvc := service.NewSignupService(handoffs, fixtures.NewFakeRateLimiter(), &routerFakeCaptcha{}, &routerFakeHasher{},
 		orch, idgen, clk, []byte("test-hmac-key-32-bytes-minimum!!"), nil,
-		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}, "2026-09")
-	statusSvc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil)
+		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}, "2026-09", 3, 5)
+	statusSvc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil, 60)
 	h := NewHandlers(sessionSvc, signupSvc, nil, statusSvc, &routerFakeCatalog{}, "sk",
-		domain.PasswordPolicy{}, domain.SlugRules{}, time.Second, "2026-09")
+		domain.PasswordPolicy{}, domain.SlugRules{}, time.Second, "2026-09", 1800, routerNoopLogger{})
 
 	// Same ServiceName as the first test — metrics identity matches, Init is a no-op
 	r := NewRouter(RouterConfig{
@@ -157,12 +215,14 @@ func TestNoStoreHeaders_SetsHeaders(t *testing.T) {
 
 	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
+	assert.Equal(t, "strict-origin-when-cross-origin", w.Header().Get("Referrer-Policy"))
 }
 
 func newTestSessionSvc(t *testing.T) (*service.SessionService, string, string) {
 	t.Helper()
 	sessions := fixtures.NewFakeSessionStore()
-	svc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock())
+	svc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock(), 20)
 	created, err := svc.Create(context.Background(), "1.2.3.4")
 	require.NoError(t, err)
 	return svc, created.SID, created.CSRFToken
@@ -185,7 +245,7 @@ func TestRequireValidatedSession_GET_ValidSID(t *testing.T) {
 
 func TestRequireValidatedSession_GET_NoSID_Returns401(t *testing.T) {
 	sessions := fixtures.NewFakeSessionStore()
-	svc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock())
+	svc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock(), 20)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -274,22 +334,23 @@ func TestSessionFromContext_WrongType_Returns401(t *testing.T) {
 	idgen := fixtures.NewFakeIDGenerator()
 	handoffs := fixtures.NewFakeHandoffStore()
 	orch := service.NewHandoffOrchestrator(handoffs,
-		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
 
-	sessionSvc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), idgen, clk)
+	sessionSvc := service.NewSessionService(sessions, fixtures.NewFakeRateLimiter(), idgen, clk, 20)
 	signupSvc := service.NewSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &routerFakeCaptcha{}, &routerFakeHasher{},
 		orch, idgen, clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
-	statusSvc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil)
+	statusSvc := service.NewStatusService(handoffs, fixtures.NewFakeRateLimiter(), orch, clk, nil, 60)
 	h := NewHandlers(sessionSvc, signupSvc, nil, statusSvc, &routerFakeCatalog{},
 		"site-key",
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		domain.SlugRules{Pattern: `^[a-z0-9-]+$`, Min: 3, Max: 30},
-		2500*time.Millisecond, "2026-09",
+		2500*time.Millisecond, "2026-09", 1800, routerNoopLogger{},
 	)
 
 	r := gin.New()

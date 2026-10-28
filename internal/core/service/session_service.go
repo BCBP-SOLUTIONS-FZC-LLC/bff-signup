@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"time"
@@ -14,17 +15,17 @@ import (
 )
 
 const (
-	maxSessionsPerIPPerHour = 20
-	sidBytes                = 32 // 256-bit random session id
-	csrfBytes               = 32 // 256-bit CSRF token
+	sidBytes  = 32 // 256-bit random session id
+	csrfBytes = 32 // 256-bit CSRF token
 )
 
 // SessionService handles SB-1: GET /api/v1/signup/session (LLD §5.3).
 type SessionService struct {
-	sessions port.SessionStore
-	limiter  port.RateLimiter
-	idgen    port.IDGenerator
-	clock    port.Clock
+	sessions             port.SessionStore
+	limiter              port.RateLimiter
+	idgen                port.IDGenerator
+	clock                port.Clock
+	sessionsPerIPPerHour int
 }
 
 func NewSessionService(
@@ -32,8 +33,9 @@ func NewSessionService(
 	limiter port.RateLimiter,
 	idgen port.IDGenerator,
 	clock port.Clock,
+	sessionsPerIPPerHour int,
 ) *SessionService {
-	return &SessionService{sessions, limiter, idgen, clock}
+	return &SessionService{sessions: sessions, limiter: limiter, idgen: idgen, clock: clock, sessionsPerIPPerHour: sessionsPerIPPerHour}
 }
 
 // SessionResult is the SB-1 response payload.
@@ -50,7 +52,7 @@ func (s *SessionService) Create(ctx context.Context, clientIP string) (*SessionR
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
 	}
-	if count > maxSessionsPerIPPerHour {
+	if count > int64(s.sessionsPerIPPerHour) {
 		metrics.IncRateLimited("session") // LLD §11.2
 		retryAfter := int(time.Until(resetAt).Seconds()) + 1
 		return nil, domain.NewError(domain.ErrRateLimited, "too many sessions from this IP").
@@ -103,7 +105,7 @@ func (s *SessionService) ValidateCSRF(ctx context.Context, sid, csrfToken string
 	if err != nil || sess == nil {
 		return nil, domain.NewError(domain.ErrSessionExpired, "session expired or not found")
 	}
-	if csrfToken == "" || hashCSRF(csrfToken) != sess.CSRFHash {
+	if csrfToken == "" || subtle.ConstantTimeCompare([]byte(hashCSRF(csrfToken)), []byte(sess.CSRFHash)) != 1 {
 		return nil, domain.NewError(domain.ErrCSRFInvalid, "CSRF token mismatch")
 	}
 	// Refresh sliding TTL

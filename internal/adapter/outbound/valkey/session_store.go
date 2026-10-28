@@ -11,16 +11,17 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
 
-const sessionTTL = 30 * time.Minute
-
 // SessionStore implements port.SessionStore using Valkey (LLD §4.1).
 type SessionStore struct {
 	rdb *redis.Client
+	ttl time.Duration
 }
 
 var _ port.SessionStore = (*SessionStore)(nil)
 
-func NewSessionStore(rdb *redis.Client) *SessionStore { return &SessionStore{rdb} }
+func NewSessionStore(rdb *redis.Client, ttl time.Duration) *SessionStore {
+	return &SessionStore{rdb: rdb, ttl: ttl}
+}
 
 func (s *SessionStore) Create(ctx context.Context, sess *port.Session) error {
 	data, err := json.Marshal(sess)
@@ -28,7 +29,7 @@ func (s *SessionStore) Create(ctx context.Context, sess *port.Session) error {
 		return err
 	}
 	return runOp(ctx, func(opCtx context.Context) error {
-		return s.rdb.Set(opCtx, sessKey(sess.SID), data, sessionTTL).Err()
+		return s.rdb.Set(opCtx, sessKey(sess.SID), data, s.ttl).Err()
 	})
 }
 
@@ -54,7 +55,7 @@ func (s *SessionStore) Get(ctx context.Context, sid string) (*port.Session, erro
 
 func (s *SessionStore) Refresh(ctx context.Context, sid string) error {
 	return runOp(ctx, func(opCtx context.Context) error {
-		return s.rdb.Expire(opCtx, sessKey(sid), sessionTTL).Err()
+		return s.rdb.Expire(opCtx, sessKey(sid), s.ttl).Err()
 	})
 }
 

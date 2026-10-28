@@ -16,6 +16,18 @@ spec:
         {{- include "bff-signup.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      # Explicit grace period matches the server's 30 s drain + 5 s buffer so
+      # K8s never forcibly kills in-flight requests during rolling updates.
+      terminationGracePeriodSeconds: 35
+      # Spread replicas across nodes so a single node failure/drain does not
+      # take down signup entirely (HA intent of replicaCount: 2, LLD §13.1).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "bff-signup.selectorLabels" . | nindent 14 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

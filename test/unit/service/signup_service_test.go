@@ -25,7 +25,7 @@ func newSignupService(
 ) *service.SignupService {
 	clk := fixtures.NewFakeClock()
 	idgen := fixtures.NewFakeIDGenerator()
-	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk)
+	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	return service.NewSignupService(
 		handoffs, limiter, captcha, hasher,
 		orch, idgen, clk,
@@ -33,6 +33,7 @@ func newSignupService(
 		nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
 }
 
@@ -144,13 +145,14 @@ func TestSubmit_HandoffCreateFails_ReturnsDependencyUnavailable(t *testing.T) {
 	handoffs := &errOnCreateHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
 	clk := fixtures.NewFakeClock()
 	orch := service.NewHandoffOrchestrator(handoffs,
-		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
 	svc := service.NewSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
 		orch, fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
 
 	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000050", CSRFHash: "h"}
@@ -168,13 +170,14 @@ func TestSubmit_LockNotAcquired_ReturnsInvalidState(t *testing.T) {
 
 	clk := fixtures.NewFakeClock()
 	orch := service.NewHandoffOrchestrator(handoffs,
-		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
 	svc := service.NewSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
 		orch, fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
 
 	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000051", CSRFHash: "h"}
@@ -189,13 +192,14 @@ func TestSubmit_HandoffGetFails_ReturnsDependencyUnavailable(t *testing.T) {
 	handoffs := &errOnGetHandoffStore{FakeHandoffStore: fixtures.NewFakeHandoffStore()}
 	clk := fixtures.NewFakeClock()
 	orch := service.NewHandoffOrchestrator(handoffs,
-		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+		fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
 	svc := service.NewSignupService(
 		handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
 		orch, fixtures.NewFakeIDGenerator(), clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true},
 		"2026-09",
+		3, 5,
 	)
 
 	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000052", CSRFHash: "h"}
@@ -253,12 +257,13 @@ func (l *errEmailLimiter) IncrEmail(_ context.Context, _ string) (int64, time.Ti
 func newSignupServiceWithLimiter(handoffs port.HandoffStore, limiter port.RateLimiter) *service.SignupService {
 	clk := fixtures.NewFakeClock()
 	idgen := fixtures.NewFakeIDGenerator()
-	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk)
+	orch := service.NewHandoffOrchestrator(handoffs, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"), clk, 10*time.Millisecond)
 	return service.NewSignupService(
 		handoffs, limiter, &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
 		orch, idgen, clk,
 		[]byte("test-hmac-key-32-bytes-minimum!!"), nil,
 		domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}, "2026-09",
+		3, 5,
 	)
 }
 

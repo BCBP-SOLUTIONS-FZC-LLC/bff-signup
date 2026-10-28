@@ -2,7 +2,6 @@ package domain
 
 import (
 	"net/mail"
-	"regexp"
 	"strings"
 	"unicode"
 )
@@ -24,16 +23,22 @@ type SlugRules struct {
 	Max     int    `json:"max"`
 }
 
-var controlChar = regexp.MustCompile(`[\x00-\x1f\x7f]`)
+const (
+	emailMaxLen     = 254 // RFC 5321 §4.5.3
+	localPartMaxLen = 64  // RFC 5321 §4.5.3
+)
 
 // ValidateCompanyName validates the company name field.
 func ValidateCompanyName(name string) error {
 	name = strings.TrimSpace(name)
-	if len(name) < 2 || len(name) > 100 {
+	runes := []rune(name)
+	if len(runes) < 2 || len(runes) > 100 {
 		return NewError(ErrValidationFailed, "company_name must be 2–100 characters")
 	}
-	if controlChar.MatchString(name) {
-		return NewError(ErrValidationFailed, "company_name contains invalid characters")
+	for _, r := range runes {
+		if unicode.IsControl(r) {
+			return NewError(ErrValidationFailed, "company_name contains invalid characters")
+		}
 	}
 	return nil
 }
@@ -41,39 +46,63 @@ func ValidateCompanyName(name string) error {
 // ValidateAdminName validates the admin name field.
 func ValidateAdminName(name string) error {
 	name = strings.TrimSpace(name)
-	if len(name) < 1 || len(name) > 100 {
+	runes := []rune(name)
+	if len(runes) < 1 || len(runes) > 100 {
 		return NewError(ErrValidationFailed, "admin_name must be 1–100 characters")
 	}
-	if controlChar.MatchString(name) {
-		return NewError(ErrValidationFailed, "admin_name contains invalid characters")
+	for _, r := range runes {
+		if unicode.IsControl(r) {
+			return NewError(ErrValidationFailed, "admin_name contains invalid characters")
+		}
 	}
 	return nil
 }
 
-// ValidateAdminEmail validates the admin email field.
+// ValidateAdminEmail validates the admin email field against RFC 5321/5322 rules.
+// The caller must pass a pre-normalised (fully lower-cased) address; see NormaliseEmail.
 func ValidateAdminEmail(email string) error {
-	if len(email) > 254 {
-		return NewError(ErrValidationFailed, "admin_email exceeds maximum length")
+	if email == "" {
+		return NewError(ErrValidationFailed, "admin_email is required")
 	}
+	if len(email) > emailMaxLen {
+		return NewError(ErrValidationFailed, "admin_email must not exceed 254 characters")
+	}
+	// ParseAddress rejects malformed addresses; addr.Address != email rejects
+	// display-name syntax ("Alice <alice@example.com>").
 	addr, err := mail.ParseAddress(email)
-	if err != nil {
-		return NewError(ErrValidationFailed, "admin_email is not a valid email address")
+	if err != nil || addr.Address != email {
+		return NewError(ErrValidationFailed, "admin_email must be a valid email address")
 	}
-	// Normalise domain to lowercase
-	parts := strings.SplitN(addr.Address, "@", 2)
-	if len(parts) != 2 {
-		return NewError(ErrValidationFailed, "admin_email is not a valid email address")
+	if email != strings.ToLower(email) {
+		return NewError(ErrValidationFailed, "admin_email must be lowercase")
+	}
+	atIdx := strings.LastIndex(email, "@")
+	local := email[:atIdx]
+	domainPart := email[atIdx+1:]
+	if len(local) > localPartMaxLen {
+		return NewError(ErrValidationFailed, "admin_email local part must not exceed 64 characters")
+	}
+	if strings.Contains(local, "..") {
+		return NewError(ErrValidationFailed, "admin_email local part must not contain consecutive dots")
+	}
+	if strings.HasPrefix(local, ".") || strings.HasSuffix(local, ".") {
+		return NewError(ErrValidationFailed, "admin_email local part must not start or end with a dot")
+	}
+	for _, r := range domainPart {
+		if r > 127 {
+			return NewError(ErrValidationFailed, "admin_email domain must be ASCII (use punycode for international domains)")
+		}
+	}
+	lastDot := strings.LastIndex(domainPart, ".")
+	if lastDot < 0 || len(domainPart[lastDot+1:]) < 2 {
+		return NewError(ErrValidationFailed, "admin_email domain must have a TLD of at least 2 characters")
 	}
 	return nil
 }
 
-// NormaliseEmail returns the email with its domain part lowercased.
+// NormaliseEmail returns the email fully lowercased. Always call this before ValidateAdminEmail.
 func NormaliseEmail(email string) string {
-	parts := strings.SplitN(email, "@", 2)
-	if len(parts) != 2 {
-		return strings.ToLower(email)
-	}
-	return parts[0] + "@" + strings.ToLower(parts[1])
+	return strings.ToLower(email)
 }
 
 // ValidatePassword checks the password against the policy (LLD §10.6).

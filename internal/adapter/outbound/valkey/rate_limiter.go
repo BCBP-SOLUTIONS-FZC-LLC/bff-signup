@@ -17,6 +17,19 @@ const (
 	pollRateTTL  = 1 * time.Minute
 )
 
+// incrFixedWindowScript increments a counter and — on the FIRST increment only —
+// sets the TTL, creating a fixed window. Returns {count, remaining_ttl_seconds}.
+// Using INCR+EXPIRE in a pipeline would renew the TTL on every call (sliding window),
+// which lets callers reset the window indefinitely by spacing requests just before expiry.
+var incrFixedWindowScript = redis.NewScript(`
+local count = redis.call("INCR", KEYS[1])
+if count == 1 then
+    redis.call("EXPIRE", KEYS[1], tonumber(ARGV[1]))
+end
+local ttl = redis.call("TTL", KEYS[1])
+return {count, ttl}
+`)
+
 // RateLimiter implements port.RateLimiter using Valkey INCR counters (LLD §10.2).
 type RateLimiter struct {
 	rdb *redis.Client
@@ -43,19 +56,31 @@ func (r *RateLimiter) IncrPoll(ctx context.Context, sid string) (int64, time.Tim
 }
 
 func (r *RateLimiter) incr(ctx context.Context, key string, ttl time.Duration) (int64, time.Time, error) {
-	var count int64
+	var count, ttlSecs int64
 	err := runOp(ctx, func(opCtx context.Context) error {
-		pipe := r.rdb.Pipeline()
-		incrCmd := pipe.Incr(opCtx, key)
-		pipe.Expire(opCtx, key, ttl)
-		if _, e := pipe.Exec(opCtx); e != nil {
+		res, e := incrFixedWindowScript.Run(opCtx, r.rdb, []string{key}, int64(ttl.Seconds())).Result()
+		if e != nil {
 			return e
 		}
-		count = incrCmd.Val()
+		vals, ok := res.([]interface{})
+		if !ok || len(vals) != 2 {
+			return fmt.Errorf("rate limit script returned unexpected result")
+		}
+		var ok1, ok2 bool
+		count, ok1 = vals[0].(int64)
+		ttlSecs, ok2 = vals[1].(int64)
+		if !ok1 || !ok2 {
+			return fmt.Errorf("rate limit script returned non-integer values (got %T, %T)", vals[0], vals[1])
+		}
 		return nil
 	})
 	if err != nil {
 		return 0, time.Time{}, err
 	}
-	return count, time.Now().Add(ttl), nil
+	if ttlSecs <= 0 {
+		// Defensive fallback: key vanished between INCR and TTL, or has no expiry.
+		ttlSecs = int64(ttl.Seconds())
+	}
+	resetAt := time.Now().Add(time.Duration(ttlSecs) * time.Second)
+	return count, resetAt, nil
 }

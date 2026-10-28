@@ -122,8 +122,20 @@ func exerciseEveryCollector(t *testing.T) {
 	IncHandoffResumed("poll")
 	IncHandoffResumed("resubmit")
 	IncHandoffResumed("slug_change")
-	ObserveDependencyCall("realm_provisioner", "provision_trial", 500*time.Millisecond, nil, nil)
-	ObserveDependencyCall("org_membership", "provision_tenant", 200*time.Millisecond, &http.Response{StatusCode: 503}, nil)
+
+	// All four adapters must call ObserveDependencyCall — exercise every
+	// (dependency, operation, outcome) combination used in production.
+	ObserveDependencyCall("realm_provisioner", "provision_trial", 500*time.Millisecond, &http.Response{StatusCode: 201}, nil)
+	ObserveDependencyCall("realm_provisioner", "provision_direct", 400*time.Millisecond, &http.Response{StatusCode: 201}, nil)
+	ObserveDependencyCall("org_membership", "provision_tenant", 200*time.Millisecond, &http.Response{StatusCode: 201}, nil)
+	ObserveDependencyCall("org_membership", "trial_eligibility", 100*time.Millisecond, &http.Response{StatusCode: 200}, nil)
+	ObserveDependencyCall("org_membership", "slug_resolve", 80*time.Millisecond, &http.Response{StatusCode: 200}, nil)
+	ObserveDependencyCall("turnstile", "siteverify", 150*time.Millisecond, &http.Response{StatusCode: 200}, nil)
+	ObserveDependencyCall("catalog", "plans", 50*time.Millisecond, &http.Response{StatusCode: 200}, nil)
+	// Error outcomes
+	ObserveDependencyCall("org_membership", "provision_tenant", 300*time.Millisecond, &http.Response{StatusCode: 503}, nil)
+	ObserveDependencyCall("turnstile", "siteverify", 300*time.Millisecond, nil, assert.AnError)
+
 	ObservePasswordHash(150 * time.Millisecond)
 
 	// DependencyErrorReason (used by call sites to classify errors)

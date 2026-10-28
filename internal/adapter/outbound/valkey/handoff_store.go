@@ -110,3 +110,7 @@ func (s *HandoffStore) ReleaseLock(ctx context.Context, signupID, token string) 
 		return releaseLockScript.Run(opCtx, s.rdb, []string{lockKey(signupID)}, token).Err()
 	})
 }
+
+func (s *HandoffStore) Ping(ctx context.Context) error {
+	return Ping(ctx, s.rdb)
+}

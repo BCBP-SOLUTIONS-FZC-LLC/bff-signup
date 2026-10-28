@@ -54,15 +54,6 @@ env:
   CAPTCHA_EXPECTED_HOSTNAME: "signup.bcbpsolutions.com"
   TERMS_CURRENT_VERSION: "2026-09"
 
-# Secrets — provided by External Secrets Operator from OpenBao (LLD §10.7)
-existingSecret: ""   # set to the ExternalSecret-managed Secret name in prod
-
-envFromSecret:
-  - VALKEY_URL
-  - SBFF_HMAC_KEY
-  - SBFF_TURNSTILE_SECRET
-  - CAPTCHA_SITE_KEY
-
 networkPolicy:
   enabled: true
   # Ingress: only from envoy-gateway-system (API) and monitoring (metrics)
@@ -75,9 +66,11 @@ networkPolicy:
     podSelector:
       app.kubernetes.io/name: prometheus
 
-# Istio ServiceEntry for Turnstile (required if outboundTrafficPolicy: REGISTRY_ONLY)
+# Istio ServiceEntry for Turnstile outbound — required when the mesh runs
+# outboundTrafficPolicy: REGISTRY_ONLY (LLD §10.1, §13.1 G-6).
+# Set enabled: true and turnstileHost when REGISTRY_ONLY is enforced in prod.
 serviceEntry:
-  enabled: false   # set true if mesh uses REGISTRY_ONLY
+  enabled: false   # set true in prod if REGISTRY_ONLY is enforced
   turnstileHost: challenges.cloudflare.com
 
 serviceMonitor:
@@ -102,11 +95,6 @@ ingress:
     name: ""           # required — name of the Envoy Gateway resource
     namespace: ""      # optional — defaults to Release.Namespace
     sectionName: ""    # optional — target a specific listener (e.g. "https")
-
-# Istio ServiceEntry for Turnstile outbound — required when the mesh runs
-# outboundTrafficPolicy: REGISTRY_ONLY (LLD §10.1, §13.1 G-6).
-serviceEntry:
-  enabled: false   # set true in prod if REGISTRY_ONLY is enforced
 
 # Secrets — provided by External Secrets Operator from OpenBao in prod (LLD §10.7, §12).
 # Set existingSecret to the External-Secrets-managed Secret name in prod.

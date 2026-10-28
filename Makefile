@@ -107,11 +107,20 @@ lint:
 arch-lint:
 	bash .github/scripts/arch-lint.sh
 
-# metrics-lint: validate signup_bff_ metric naming conventions — all counters
-# end with _total, histograms with _seconds, no high-cardinality labels.
+# metrics-lint: validate bff_signup_* metric naming conventions — all counters
+# end with _total, histograms with _seconds, no high-cardinality labels,
+# adapter instrumentation enforced, label vocabulary checked.
 .PHONY: metrics-lint
 metrics-lint:
-	bash scripts/validate-metrics.sh
+	bash .github/scripts/check-metric-naming.sh
+	bash .github/scripts/metrics-registry-lint.sh
+
+# log-sink-lint: enforce the Enterprise Platform Observability Standard requirement
+# that all logs, metrics, and traces pass through platform-gincommon only.
+# No standard library log, no fmt.Print* outside cmd/main(), no raw prometheus.
+.PHONY: log-sink-lint
+log-sink-lint:
+	bash .github/scripts/check-log-sink.sh
 
 # -----------------------------
 # TESTS
@@ -252,7 +261,7 @@ helm-template:
 # -----------------------------
 
 .PHONY: ci
-ci: tidy fmt-check vet lint arch-lint test-ci build
+ci: tidy fmt-check vet lint arch-lint metrics-lint log-sink-lint test-ci build
 
 # -----------------------------
 # COVERAGE

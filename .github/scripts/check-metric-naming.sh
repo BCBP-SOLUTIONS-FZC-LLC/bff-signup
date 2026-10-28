@@ -77,6 +77,66 @@ for kind, name in tier3:
     if kind.startswith("Gauge") and name.endswith("_total"):
         errors.append(f'"{name}": a gauge must not end in _total')
 
+# ── Label vocabulary: high-cardinality labels must NEVER appear ─────────────
+# Rule: platform and domain shared metrics must use approved label vocabularies.
+# Service-specific (Tier 3) must also never use high-cardinality identifiers.
+PROHIBITED_LABELS = {
+    "user_id", "email", "tenant_id", "request_id",
+    "event_id", "session_id", "signup_id", "ip", "ip_address",
+}
+# Scan all WithLabelValues call sites in call-site code (service/adapter layers)
+# for label values that look like high-cardinality identifiers being passed
+# into Inc*/Observe* helpers.  We cannot recover the label names at call-site
+# level, but we CAN enforce the approved label NAMES in the metric declarations.
+# Extract label names from gincommon.New*Vec(..., "label1", "label2") calls.
+for text in sources.values():
+    for m in re.finditer(
+        r'gincommon\.New(?:CounterVec|HistogramVec|GaugeVec)\(nil,\s*"[^"]+",\s*"[^"]+",\s*((?:"[^"]+"(?:,\s*)?)+)\)',
+        text,
+    ):
+        label_names = re.findall(r'"([^"]+)"', m.group(1))
+        for lname in label_names:
+            if lname in PROHIBITED_LABELS:
+                line = text[:m.start()].count("\n") + 1
+                errors.append(
+                    f'label "{lname}" is a high-cardinality identifier — '
+                    f"prohibited on all tiers (rule: no user_id/email/tenant_id/... as label)"
+                )
+
+# ── Tier 2 boundary: warn on any bff_* that is NOT bff_signup_* ─────────────
+# The bff domain currently has a single service (bff-signup). Any bff_* metric
+# that does not carry the bff_signup_ prefix would be a Tier 2 domain-shared
+# metric, which requires domain-registry approval before adoption.
+for text in sources.values():
+    for m in re.finditer(r'gincommon\.New\w+\(nil,\s*"(bff_(?!signup_)[^"]+)"', text):
+        line = text[:m.start()].count("\n") + 1
+        errors.append(
+            f'"{m.group(1)}": bff_<x>_* without bff_signup_ prefix is a Tier 2 domain-shared metric — '
+            f"requires domain-registry approval (standard rule 12; currently no Tier 2 bff_* metrics are approved)"
+        )
+
+# ── Verify ObserveDependencyCall is called from each outbound adapter ────────
+# The bff_signup_dependency_call_duration_seconds histogram must be populated
+# by every outbound HTTP adapter, not only by the metrics package itself.
+EXPECTED_INSTRUMENTED_ADAPTERS = [
+    "internal/adapter/outbound/orgmembership/client.go",
+    "internal/adapter/outbound/realmprovisioner/client.go",
+    "internal/adapter/outbound/turnstile/client.go",
+    "internal/adapter/outbound/catalog/client.go",
+]
+for adapter_path in EXPECTED_INSTRUMENTED_ADAPTERS:
+    try:
+        adapter_text = open(adapter_path, encoding="utf-8").read()
+    except FileNotFoundError:
+        errors.append(f"{adapter_path}: adapter file not found")
+        continue
+    if "ObserveDependencyCall" not in adapter_text:
+        errors.append(
+            f"{adapter_path}: ObserveDependencyCall not called — "
+            f"bff_signup_dependency_call_duration_seconds will be empty for this adapter "
+            f"(standard: every outbound HTTP adapter must be instrumented)"
+        )
+
 total = len(shared_names) + len(tier3)
 if errors:
     for e in errors:
@@ -84,5 +144,5 @@ if errors:
     print(f"\n{len(errors)} violation(s) across {total} collectors checked.")
     sys.exit(1)
 
-print(f"  ✔  {total} collectors — naming, suffix and construction rules OK (bff_signup_* Tier 3; platform_* Tier 1)")
+print(f"  ✔  {total} collectors — naming, suffix, construction, label vocabulary and adapter instrumentation rules OK")
 PYEOF

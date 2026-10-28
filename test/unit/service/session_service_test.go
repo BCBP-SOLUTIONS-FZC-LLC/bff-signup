@@ -16,11 +16,11 @@ import (
 )
 
 func newSessionSvc(sessions *fixtures.FakeSessionStore, limiter *fixtures.FakeRateLimiter) *service.SessionService {
-	return service.NewSessionService(sessions, limiter, fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock())
+	return service.NewSessionService(sessions, limiter, fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock(), 20)
 }
 
 func newSessionSvcWithAny(sessions port.SessionStore, limiter port.RateLimiter) *service.SessionService {
-	return service.NewSessionService(sessions, limiter, fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock())
+	return service.NewSessionService(sessions, limiter, fixtures.NewFakeIDGenerator(), fixtures.NewFakeClock(), 20)
 }
 
 func TestSessionCreate_HappyPath(t *testing.T) {

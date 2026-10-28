@@ -14,6 +14,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/inbound/http/middleware"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 )
 
@@ -27,11 +28,15 @@ func HandleError(c *gin.Context, err error) {
 // toDomainProblem converts any service error to a *problem.Error for RFC 9457
 // rendering. *problem.Error passes through; *domain.DomainError is mapped via
 // domainErrorToProblem with its Details attached as RFC 9457 §3.2 extension
-// members; anything else is passed to gincommon (DeadlineExceeded→503, else→500).
+// members; *http.MaxBytesError → 413; anything else is passed to gincommon
+// (DeadlineExceeded→503, else→500).
 func toDomainProblem(err error) error {
 	var pe *problem.Error
 	if errors.As(err, &pe) {
 		return pe
+	}
+	if p := middleware.BodyTooLargeFromError(err); p != nil {
+		return p
 	}
 	var de *domain.DomainError
 	if errors.As(err, &de) {
