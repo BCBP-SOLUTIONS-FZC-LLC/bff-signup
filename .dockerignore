@@ -9,11 +9,13 @@
 
 # Development tooling and docs
 .claude/
-docs/
+docs/lld/
+docs/observability/
 deploy/
 scripts/
 *.md
 README.md
+# docs/swagger/ is intentionally NOT excluded — router.go imports it at compile time
 
 # Test artefacts
 test/
