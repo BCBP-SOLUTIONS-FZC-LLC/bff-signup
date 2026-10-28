@@ -47,6 +47,22 @@ RUN CGO_ENABLED=0 GOOS=linux \
       -o bin/server \
       ./cmd/server
 
+# ── Certs stage ───────────────────────────────────────────────────────────────
+# Debian bookworm's current CA bundle for the runtime image. The pinned
+# distroless static-debian12 image ships ca-certificates 20250419~deb12u1;
+# deb12u2 (DLA-4845-1) removes two distrusted roots — Comodo "AAA Certificate
+# Services" and "emSign ECC Root CA - G3" — that Go binaries consult for every
+# outbound TLS connection (Turnstile, RP-1, I-1, Catalog). The Alpine builder's
+# bundle is no substitute: it still carries the emSign root.
+# Drop this stage, the COPY below and the .trivyignore entry once distroless
+# ships deb12u2 (run `make pin-base-images` to refresh and check).
+# Mirrors iam-org-membership/Dockerfile.
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS certs
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # gcr.io/distroless/static-debian12:nonroot — no shell, no package manager,
 # runs as uid 65532 (nonroot). Digest-pinned: run `make pin-base-images` to refresh.
@@ -61,6 +77,8 @@ LABEL org.opencontainers.image.title="bff-signup" \
       org.opencontainers.image.revision="${BUILD_VERSION}"
 
 COPY --from=builder /build/bin/server /server
+# Patched CA bundle (deb12u2) over distroless's deb12u1 — see the certs stage.
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8080 9090
 
