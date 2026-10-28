@@ -15,6 +15,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 )
 
 // RouterConfig holds all router dependencies (LLD §3, §13.1).
@@ -123,7 +124,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			)
 		} else {
 			v1.POST("/paid", func(c *gin.Context) {
-				c.JSON(http.StatusNotFound, ErrorResponse{Error: "not_implemented", Status: http.StatusNotFound})
+				gincommon.AbortWithProblem(c, problem.NewNotFoundError("paid signup is not enabled"))
 			})
 		}
 	}
@@ -149,7 +150,7 @@ func requireValidatedSession(svc *service.SessionService) gin.HandlerFunc {
 		}
 
 		if err != nil {
-			handleError(c, err)
+			HandleError(c, err)
 			return
 		}
 

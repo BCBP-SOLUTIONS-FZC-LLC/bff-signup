@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/inbound/http/middleware"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
@@ -66,13 +68,13 @@ func (h *Handlers) Session(c *gin.Context) {
 
 	result, err := h.session.Create(c.Request.Context(), clientIP)
 	if err != nil {
-		handleError(c, err)
+		HandleError(c, err)
 		return
 	}
 
 	plans, err := h.catalog.Plans(c.Request.Context())
 	if err != nil {
-		handleError(c, domain.NewError(domain.ErrDependencyUnavailable, "catalog unavailable"))
+		HandleError(c, domain.NewError(domain.ErrDependencyUnavailable, "catalog unavailable"))
 		return
 	}
 
@@ -128,7 +130,7 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 
 	var req TrialSignupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		handleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+		HandleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
 		return
 	}
 
@@ -156,20 +158,19 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 	})
 	if err != nil {
 		if de, ok := err.(*domain.DomainError); ok && de.Cause == domain.ErrSlugTaken {
-			// 409 slug_taken with suggestions (A-3: note about offboarded tenants, LLD §17.1)
-			var resp SlugTakenResponse
-			resp.Error = "slug_taken"
-			resp.Status = http.StatusConflict
-			resp.Message = "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address."
-			resp.RequestID = c.GetString("X-Request-Id")
-			resp.Details.SignupID = sess.SignupID
-			if result != nil {
-				resp.Details.Suggestions = result.SlugSuggestions
+			// 409 slug_taken — RFC 9457 conflict with extension members for signup_id + suggestions
+			// (A-3: note about offboarded tenants, LLD §17.1)
+			ext := map[string]any{
+				"signup_id": sess.SignupID,
+				"message":   "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address.",
 			}
-			c.JSON(http.StatusConflict, resp)
+			if result != nil {
+				ext["suggestions"] = result.SlugSuggestions
+			}
+			gincommon.AbortWithProblem(c, domainErrorToProblem(de).WithExtensions(ext))
 			return
 		}
-		handleError(c, err)
+		HandleError(c, err)
 		return
 	}
 
@@ -226,7 +227,7 @@ func (h *Handlers) GetStatus(c *gin.Context) {
 
 	result, err := h.status.GetStatus(c.Request.Context(), sess.SignupID, pathID, sid)
 	if err != nil {
-		handleError(c, err)
+		HandleError(c, err)
 		return
 	}
 
@@ -275,23 +276,22 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 
 	var req SlugChangeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		handleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+		HandleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
 		return
 	}
 
 	result, err := h.status.ChangeSlug(c.Request.Context(), sess.SignupID, pathID, req.Slug)
 	if err != nil {
 		if de, ok := err.(*domain.DomainError); ok && de.Cause == domain.ErrSlugTaken {
-			var resp SlugTakenResponse
-			resp.Error = "slug_taken"
-			resp.Status = http.StatusConflict
-			resp.Message = "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address."
-			resp.RequestID = c.GetString("X-Request-Id")
-			resp.Details.SignupID = pathID
-			c.JSON(http.StatusConflict, resp)
+			// 409 slug_taken — RFC 9457 conflict with extension members for signup_id
+			ext := map[string]any{
+				"signup_id": pathID,
+				"message":   "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address.",
+			}
+			gincommon.AbortWithProblem(c, domainErrorToProblem(de).WithExtensions(ext))
 			return
 		}
-		handleError(c, err)
+		HandleError(c, err)
 		return
 	}
 
@@ -317,20 +317,12 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 func sessionFromContext(c *gin.Context) (*port.Session, bool) {
 	raw, exists := c.Get("session")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Error:  "session_expired",
-			Status: http.StatusUnauthorized,
-		})
-		c.Abort()
+		gincommon.AbortWithProblem(c, toDomainProblem(domain.NewError(domain.ErrSessionExpired, "session cookie missing or expired")))
 		return nil, false
 	}
 	sess, ok := raw.(*port.Session)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Error:  "session_expired",
-			Status: http.StatusUnauthorized,
-		})
-		c.Abort()
+		gincommon.AbortWithProblem(c, toDomainProblem(domain.NewError(domain.ErrSessionExpired, "session cookie missing or expired")))
 		return nil, false
 	}
 	return sess, true
@@ -406,7 +398,7 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 
 	var req PaidSignupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		handleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+		HandleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
 		return
 	}
 
@@ -446,7 +438,7 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 			c.JSON(http.StatusConflict, resp)
 			return
 		}
-		handleError(c, err)
+		HandleError(c, err)
 		return
 	}
 
