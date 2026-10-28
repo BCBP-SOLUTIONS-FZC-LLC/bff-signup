@@ -24,16 +24,12 @@ import (
 // ensureRegistered initialises gincommon and calls Register() exactly once
 // per test binary, matching the production startup order (cmd/server/main.go).
 //
-// DOMAIN NOTE: platform-gincommon v2's metric registry validates the domain
-// against a fixed vocabulary [iam workflow billing tender_management
-// notifications documents]. "bff" is not yet registered. Until the
-// observability governance body adds "bff" to the Platform Observability
-// Registry, tests use OBSERVABILITY_DOMAIN=workflow as a placeholder.
-// Production deployment requires a platform registry PR to add "bff" first
-// (mirrors the same workaround in internal/adapter/inbound/http/router_test.go).
+// "bff" was added to the platform-gincommon domain registry in v2.2.0 (PR #49),
+// so we now use the real domain — no more placeholder workaround.
+// Mirrors the same pattern as iam-org-membership's standard_test.go.
 func ensureRegistered(t *testing.T) {
 	t.Helper()
-	t.Setenv("OBSERVABILITY_DOMAIN", "workflow") // placeholder; replace with "bff" once registry adds it
+	t.Setenv("OBSERVABILITY_DOMAIN", "bff") // real domain — registered in platform-gincommon v2.2.0
 	t.Setenv("APP_ENV", "test")
 	// gincommon.ObservabilityMiddlewares fixes the {domain,service,environment}
 	// const labels; Register() then builds all collectors on that identity.

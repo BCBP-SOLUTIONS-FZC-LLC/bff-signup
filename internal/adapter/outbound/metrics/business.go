@@ -18,9 +18,15 @@
 // gincommon's constructors (rule 8). No collector carries a version label;
 // the build version lives only on platform_build_info.
 //
+// Tier-1 platform_* collectors come from the central Platform Observability
+// Registry via gincommon.NewShared*Vec. Tier-3 bff_signup_* collectors use
+// gincommon.NewCounterVec / NewHistogramVec, which validate the bff_signup_
+// prefix, suffixes and prohibited labels and inject the identity const labels.
+// "bff" was added to the platform-gincommon domain registry in v2.2.0 (PR #49).
+//
 // Registration order: call Register() after gincommon.ObservabilityMiddlewares
 // (which fixes the {domain, service, environment} identity) and before
-// /metrics is served.
+// /metrics is served. Mirrors iam-org-membership/internal/adapter/outbound/metrics.
 package metrics
 
 import (
@@ -58,10 +64,12 @@ var (
 	// funnel drop-off). LLD §11.2.
 	FormSubmitted *prometheus.CounterVec
 
-	// ProvisioningSucceeded (bff_signup_provisioning_succeeded_total{mode,path})
-	// counts signups that reached state=completed. path is "inline" (I-1
+	// ProvisioningSucceeded (bff_signup_provisioning_succeeded_total{mode,strategy})
+	// counts signups that reached state=completed. strategy is "inline" (I-1
 	// succeeded within the SB-2 request), "resume" (SB-3 poll completed it),
 	// or "slug_change" (SB-4 completed it). LLD §11.2.
+	// Note: label was renamed path→strategy because "path" is a prohibited label
+	// in the platform registry (unbounded cardinality risk for URL-like paths).
 	ProvisioningSucceeded *prometheus.CounterVec
 
 	// ProvisioningFailed (bff_signup_provisioning_failed_total{mode,stage,reason})
@@ -119,10 +127,10 @@ func IncFormSubmitted(mode string) {
 }
 
 // IncProvisioningSucceeded records one completed signup.
-// path: "inline" | "resume" | "slug_change".
-func IncProvisioningSucceeded(mode, path string) {
+// strategy: "inline" | "resume" | "slug_change".
+func IncProvisioningSucceeded(mode, strategy string) {
 	if ProvisioningSucceeded != nil {
-		ProvisioningSucceeded.WithLabelValues(mode, path).Inc()
+		ProvisioningSucceeded.WithLabelValues(mode, strategy).Inc()
 	}
 }
 
@@ -246,98 +254,70 @@ func mustShared[C prometheus.Collector](c C, err error) C {
 	panic("metrics: register shared platform collector: " + err.Error())
 }
 
-// registerServiceMetrics builds all Tier 3 bff_signup_* collectors.
-//
-// NOTE: gincommon.NewCounterVec validates metric names against the domain
-// registry. The "bff" domain is not yet registered in platform-gincommon
-// (vocabulary: [iam workflow billing tender_management notifications documents]).
-// Until "bff" is ratified by the observability governance body, we use
-// prometheus.NewCounterVec/NewHistogramVec directly with the ConstLabels set
-// from gincommon.MetricsConstLabels() — identical const-label injection,
-// bypassing only the domain-name prefix check. Once "bff" is registered,
-// switch to gincommon.NewCounterVec etc. and the check-metric-naming.sh
-// script will enforce the full standard automatically.
-//
-// Pending: submit "bff" domain registration packet to platform observability
-// governance before production deployment (rule 12 of the standard).
-func registerServiceMetrics() {
-	constLabels := gincommon.MetricsConstLabels()
-	reg := gincommon.MetricsRegisterer()
-
-	register := func(c prometheus.Collector) {
-		if err := reg.Register(c); err != nil {
-			var are prometheus.AlreadyRegisteredError
-			if !errors.As(err, &are) {
-				panic("metrics: register service collector: " + err.Error())
-			}
-		}
+// must panics on a Tier 3 construction error — a wrong name, suffix or label
+// is a programming error caught at startup. Mirrors iam-org-membership.
+func must[C any](c C, err error) C {
+	if err != nil {
+		panic("metrics: register service collector: " + err.Error())
 	}
+	return c
+}
 
-	FormStarted = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_form_started_total",
-		Help:        "SB-1 sessions successfully created, by mode (trial in Phase 1; paid in Phase 1.5). Baseline for signup funnel (LLD §11.2).",
-		ConstLabels: constLabels,
-	}, []string{"mode"})
-	register(FormStarted)
+// registerServiceMetrics builds all Tier 3 bff_signup_* collectors using
+// gincommon.NewCounterVec / NewHistogramVec — the same constructors used by
+// iam-org-membership for its iam_org_membership_* metrics. These validate the
+// bff_signup_ prefix, _total/_seconds suffixes and prohibited labels, and
+// inject the {domain, service, environment} const labels automatically.
+// "bff" was added to the platform-gincommon domain registry in v2.2.0 (PR #49),
+// making this identical to iam-org-membership's pattern.
+func registerServiceMetrics() {
+	FormStarted = must(gincommon.NewCounterVec(nil,
+		"bff_signup_form_started_total",
+		"SB-1 sessions successfully created, by mode (trial in Phase 1; paid in Phase 1.5). Baseline for signup funnel (LLD §11.2).",
+		"mode"))
 
-	FormSubmitted = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_form_submitted_total",
-		Help:        "SB-2 requests received before any processing, by mode. Paired with bff_signup_provisioning_succeeded_total for funnel drop-off (LLD §11.2).",
-		ConstLabels: constLabels,
-	}, []string{"mode"})
-	register(FormSubmitted)
+	FormSubmitted = must(gincommon.NewCounterVec(nil,
+		"bff_signup_form_submitted_total",
+		"SB-2 requests received before any processing, by mode. Paired with bff_signup_provisioning_succeeded_total for funnel drop-off (LLD §11.2).",
+		"mode"))
 
-	ProvisioningSucceeded = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_provisioning_succeeded_total",
-		Help:        "Signups that reached state=completed, by mode and path: inline (I-1 succeeded within SB-2), resume (SB-3 poll completed it), slug_change (SB-4 completed it). LLD §11.2.",
-		ConstLabels: constLabels,
-	}, []string{"mode", "path"})
-	register(ProvisioningSucceeded)
+	ProvisioningSucceeded = must(gincommon.NewCounterVec(nil,
+		"bff_signup_provisioning_succeeded_total",
+		"Signups that reached state=completed, by mode and strategy: inline (I-1 succeeded within SB-2), resume (SB-3 poll completed it), slug_change (SB-4 completed it). LLD §11.2.",
+		"mode", "strategy"))
 
-	ProvisioningFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_provisioning_failed_total",
-		Help:        "Signups stuck in state=failed after exhausting the 15-min resume window, by mode, stage (eligibility|realm_provisioner|org_membership) and reason (unavailable|contract_error|exhausted). LLD §11.2.",
-		ConstLabels: constLabels,
-	}, []string{"mode", "stage", "reason"})
-	register(ProvisioningFailed)
+	ProvisioningFailed = must(gincommon.NewCounterVec(nil,
+		"bff_signup_provisioning_failed_total",
+		"Signups stuck in state=failed after exhausting the 15-min resume window, by mode, stage (eligibility|realm_provisioner|org_membership) and reason (unavailable|contract_error|exhausted). LLD §11.2.",
+		"mode", "stage", "reason"))
 
-	RateLimited = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_rate_limited_total",
-		Help:        "Requests rejected by abuse controls, by scope: ip (3/h per IP, SB-2), email (5/24h, SB-2), session (20/h per IP, SB-1), poll (60/min per session, SB-3). LLD §11.2.",
-		ConstLabels: constLabels,
-	}, []string{"scope"})
-	register(RateLimited)
+	RateLimited = must(gincommon.NewCounterVec(nil,
+		"bff_signup_rate_limited_total",
+		"Requests rejected by abuse controls, by scope: ip (3/h per IP, SB-2), email (5/24h, SB-2), session (20/h per IP, SB-1), poll (60/min per session, SB-3). LLD §11.2.",
+		"scope"))
 
-	CaptchaChallenged = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_captcha_challenged_total",
-		Help:        "Turnstile siteverify calls, by result: pass (success=true), fail (success=false), error (transport/HTTP error). LLD §11.2.",
-		ConstLabels: constLabels,
-	}, []string{"result"})
-	register(CaptchaChallenged)
+	CaptchaChallenged = must(gincommon.NewCounterVec(nil,
+		"bff_signup_captcha_challenged_total",
+		"Turnstile siteverify calls, by result: pass (success=true), fail (success=false), error (transport/HTTP error). LLD §11.2.",
+		"result"))
 
-	HandoffResumed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "bff_signup_handoff_resumed_total",
-		Help:        "I-1 retry attempts on an existing handoff, by trigger: poll (SB-3), resubmit (SB-2 same-session retry), slug_change (SB-4). LLD §11.2.",
-		ConstLabels: constLabels,
-	}, []string{"trigger"})
-	register(HandoffResumed)
+	HandoffResumed = must(gincommon.NewCounterVec(nil,
+		"bff_signup_handoff_resumed_total",
+		"I-1 retry attempts on an existing handoff, by trigger: poll (SB-3), resubmit (SB-2 same-session retry), slug_change (SB-4). LLD §11.2.",
+		"trigger"))
 
-	// Tier 3 predecessor of Proposed Tier 1 platform_dependency_request_seconds.
-	DependencyCallDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "bff_signup_dependency_call_duration_seconds",
-		Help:        "Wall time of synchronous calls to external dependencies (RP-1, I-1, eligibility, PUB-1, Turnstile, Catalog), by dependency and outcome. Authoritative until platform_dependency_request_seconds is ratified (registry.go). LLD §11.2.",
-		ConstLabels: constLabels,
-		Buckets:     []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3},
-	}, []string{"dependency", "outcome"})
-	register(DependencyCallDurationSeconds)
+	// Tier 3 predecessor of the Proposed Tier 1 platform_dependency_request_seconds.
+	// Authoritative alerting/SLO source until registry ratification (registry.go).
+	DependencyCallDurationSeconds = must(gincommon.NewHistogramVec(nil,
+		"bff_signup_dependency_call_duration_seconds",
+		"Wall time of synchronous calls to external dependencies (RP-1, I-1, eligibility, PUB-1, Turnstile, Catalog), by dependency and outcome. Authoritative until platform_dependency_request_seconds is ratified (registry.go). LLD §11.2.",
+		[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3},
+		"dependency", "outcome"))
 
-	passwordHashVec = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "bff_signup_password_hash_duration_seconds",
-		Help:        "PBKDF2-SHA512 hashing time per SB-2 request (~100–200 ms CPU; drives HPA sizing and SLO-2 budget). LLD §11.2, §10.6, §13.2.",
-		ConstLabels: constLabels,
-		Buckets:     []float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0},
-	}, nil)
-	register(passwordHashVec)
+	passwordHashVec = must(gincommon.NewHistogramVec(nil,
+		"bff_signup_password_hash_duration_seconds",
+		"PBKDF2-SHA512 hashing time per SB-2 request (~100–200 ms CPU; drives HPA sizing and SLO-2 budget). LLD §11.2, §10.6, §13.2.",
+		[]float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0}))
 }
 
 // prewarm creates zero-value series for bounded label combinations so
@@ -351,8 +331,8 @@ func prewarm() {
 
 	// ProvisioningSucceeded
 	for _, mode := range []string{"trial", "paid"} {
-		for _, path := range []string{"inline", "resume", "slug_change"} {
-			ProvisioningSucceeded.WithLabelValues(mode, path)
+		for _, strategy := range []string{"inline", "resume", "slug_change"} {
+			ProvisioningSucceeded.WithLabelValues(mode, strategy)
 		}
 	}
 

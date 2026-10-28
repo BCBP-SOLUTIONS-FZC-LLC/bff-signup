@@ -11,17 +11,13 @@
 #   - Tier 1 platform_* names come from gincommon.NewSharedHistogramVec/
 #     NewSharedCounterVec (registerShared in business.go).
 #   - Tier 3 bff_signup_* names are the only Prometheus collectors built
-#     outside gincommon's validated constructors, because the "bff" domain is
-#     not yet in the platform registry vocabulary. The naming convention
-#     bff_signup_<snake_case> is enforced here instead.
+# which validate the bff_signup_ prefix — "bff" domain registered in
+# platform-gincommon v2.2.0 (PR #49). Naming convention
+# bff_signup_<snake_case> is enforced by gincommon + by this script.
 #   - Counter names MUST end in _total.
 #   - Histogram names MUST end in _seconds.
 #   - No gauge names end in _total.
 #
-# PENDING: once "bff" is added to the Platform Observability Registry, switch
-# the prometheus.NewCounterVec/NewHistogramVec calls in business.go to
-# gincommon.NewCounterVec/NewHistogramVec (which enforce the prefix in the
-# library itself), and update the validator below accordingly.
 set -euo pipefail
 
 DIR="internal/adapter/outbound/metrics"
@@ -66,8 +62,9 @@ for name in shared_names:
     if not name.startswith("platform_") and not (name.startswith("iam_") and not name.startswith("iam_bff_")):
         errors.append(f'"{name}": registerShared() must build only platform_* or domain-shared names')
 
-# registerServiceMetrics — must use bff_signup_* names with correct suffixes
-tier3 = re.findall(r'prometheus\.New(CounterVec|Counter|GaugeVec|Gauge|HistogramVec)\(\s*prometheus\.\w+Opts\{[^}]*Name:\s*"([^"]+)"', body_of("registerServiceMetrics"), re.DOTALL)
+# registerServiceMetrics — must use gincommon.New*Vec with bff_signup_* names
+# "bff" registered in platform-gincommon v2.2.0; gincommon constructors now enforce prefix.
+tier3 = re.findall(r'gincommon\.New(CounterVec|Counter|GaugeVec|Gauge|HistogramVec)\(nil,\s*"([^"]+)"', body_of("registerServiceMetrics"))
 if not tier3:
     errors.append(f"{pkg}/business.go: registerServiceMetrics() builds no Tier 3 collectors")
 for kind, name in tier3:

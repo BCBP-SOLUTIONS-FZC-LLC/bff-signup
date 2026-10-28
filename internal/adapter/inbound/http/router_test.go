@@ -28,7 +28,7 @@ func init() {
 func TestNewRouter_HealthzReadyzAndPaidDisabled(t *testing.T) {
 	// gincommon requires a Domain in its registry; "workflow" is valid.
 	// OBSERVABILITY_DOMAIN overrides Config.Domain when Config.Domain is empty.
-	t.Setenv("OBSERVABILITY_DOMAIN", "workflow")
+	t.Setenv("OBSERVABILITY_DOMAIN", "bff")
 	t.Setenv("APP_ENV", "test")
 
 	sessions := fixtures.NewFakeSessionStore()
@@ -82,7 +82,7 @@ func TestNewRouter_HealthzReadyzAndPaidDisabled(t *testing.T) {
 func TestNewRouter_DocsEnabledAndPaidEnabled(t *testing.T) {
 	// Second NewRouter call must reuse the same service identity ("bff-signup-test")
 	// established by TestNewRouter_HealthzReadyzAndPaidDisabled — metrics are global/Once.
-	t.Setenv("OBSERVABILITY_DOMAIN", "workflow")
+	t.Setenv("OBSERVABILITY_DOMAIN", "bff")
 	t.Setenv("APP_ENV", "test")
 
 	sessions := fixtures.NewFakeSessionStore()

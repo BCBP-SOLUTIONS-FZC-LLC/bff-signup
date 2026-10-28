@@ -241,7 +241,7 @@ func (o *HandoffOrchestrator) callI1Once(ctx context.Context, h *domain.Handoff)
 	h.State = domain.StateCompleted
 	h.UpdatedAt = o.clock.Now()
 	_ = o.handoffs.Update(ctx, h)
-	metrics.IncProvisioningSucceeded("trial", "inline") // LLD §11.2 — path determined by caller; inline is the default
+	metrics.IncProvisioningSucceeded("trial", "inline") // LLD §11.2 — strategy=inline (I-1 completed within SB-2 request)
 	return &OrchestratorResult{
 		State:          domain.StateCompleted,
 		KeycloakUserID: h.KeycloakUserID,
