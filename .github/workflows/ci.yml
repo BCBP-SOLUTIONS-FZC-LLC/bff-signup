@@ -75,8 +75,12 @@ jobs:
       - name: Check .dockerignore exists
         run: test -f .dockerignore
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+      - name: Prepare Docker build
+        id: cache
+        env:
+          REGISTRY_REF: ${{ env.IMAGE_NAME }}:buildcache
+          CAN_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: bash .github/scripts/docker-build-prep.sh
 
       - name: Log in to GHCR
         uses: docker/login-action@v4.6.0
@@ -84,6 +88,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
 
       - name: Build image → cache (no push)
         uses: docker/build-push-action@v7.3.0
@@ -93,10 +100,12 @@ jobs:
           platforms: linux/amd64
           push: false
           load: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          pull: ${{ github.event_name != 'pull_request' }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
           build-args: |
             BUILD_VERSION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.cache.outputs.SOURCE_DATE_EPOCH }}
           secrets: |
             go_private_token=${{ secrets.GO_PRIVATE_TOKEN }}
 
@@ -127,7 +136,9 @@ jobs:
           push: false
           load: true
           tags: bff-signup-ci-test
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
           build-args: BUILD_VERSION=${{ github.sha }}
           secrets: |
             go_private_token=${{ secrets.GO_PRIVATE_TOKEN }}
@@ -206,7 +217,9 @@ jobs:
           push: false
           load: true
           tags: bff-signup-ci-test
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
           build-args: BUILD_VERSION=${{ github.sha }}
           secrets: |
             go_private_token=${{ secrets.GO_PRIVATE_TOKEN }}
