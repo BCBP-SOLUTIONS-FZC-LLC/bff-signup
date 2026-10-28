@@ -578,7 +578,8 @@ func TestHandlerSubmitPaid_SlugTaken_Returns409WithSuggestions(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code)
 	var resp map[string]any
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	assert.Equal(t, "slug_taken", resp["error"])
+	// RFC 9457: errorCode field (UPPER_SNAKE), not legacy "error" field
+	assert.Equal(t, "SLUG_TAKEN", resp["errorCode"])
 }
 
 func TestHandlerSubmitPaid_BillingFails_Returns503(t *testing.T) {

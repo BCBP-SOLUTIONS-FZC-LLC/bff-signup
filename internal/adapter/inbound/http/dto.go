@@ -81,15 +81,24 @@ type PaidSignupResponse struct {
 	PollAfterMs           int    `json:"poll_after_ms,omitempty"`
 }
 
-// ── Slug taken (409) response ─────────────────────────────────────────────────
-
+// SlugTakenResponse is the RFC 9457 representation of a 409 slug_taken error.
+// Fields are RFC 9457 §3.2 extension members, not a custom error DTO.
+// The actual response is built and serialized by gincommon.AbortWithProblem.
+// This type is kept only for Swagger annotation reference (@Failure 409 {object} SlugTakenResponse).
+//
+// Wire shape (application/problem+json):
+//
+//	{
+//	  "type":       "...",
+//	  "title":      "...",
+//	  "status":     409,
+//	  "errorCode":  "SLUG_TAKEN",
+//	  "signup_id":  "01JAB...",
+//	  "suggestions": ["acme-2", "acme-hq"],
+//	  "message":    "That workspace address is taken..."
+//	}
 type SlugTakenResponse struct {
-	Error     string `json:"error"`
-	Status    int    `json:"status"`
-	Message   string `json:"message,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
-	Details   struct {
-		SignupID    string   `json:"signup_id"`
-		Suggestions []string `json:"suggestions"`
-	} `json:"details"`
+	SignupID    string   `json:"signup_id"`
+	Suggestions []string `json:"suggestions"`
+	Message     string   `json:"message,omitempty"`
 }

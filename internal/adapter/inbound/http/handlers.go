@@ -129,8 +129,8 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 	}
 
 	var req TrialSignupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 
@@ -275,8 +275,8 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 	pathID := c.Param("signup_id")
 
 	var req SlugChangeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 
@@ -397,8 +397,8 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 	}
 
 	var req PaidSignupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidationFailed, err.Error()))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 
@@ -426,16 +426,15 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 	})
 	if err != nil {
 		if de, ok := err.(*domain.DomainError); ok && de.Cause == domain.ErrSlugTaken {
-			var resp SlugTakenResponse
-			resp.Error = "slug_taken"
-			resp.Status = http.StatusConflict
-			resp.Message = "That workspace address is taken."
-			resp.RequestID = c.GetString("X-Request-Id")
-			resp.Details.SignupID = sess.SignupID
-			if result != nil {
-				resp.Details.Suggestions = result.SlugSuggestions
+			// 409 slug_taken — RFC 9457 conflict with extension members (SB-5 paid path)
+			ext := map[string]any{
+				"signup_id": sess.SignupID,
+				"message":   "That workspace address is taken. Workspace addresses can appear available but still be in use, because offboarded workspaces keep their address.",
 			}
-			c.JSON(http.StatusConflict, resp)
+			if result != nil {
+				ext["suggestions"] = result.SlugSuggestions
+			}
+			gincommon.AbortWithProblem(c, domainErrorToProblem(de).WithExtensions(ext))
 			return
 		}
 		HandleError(c, err)

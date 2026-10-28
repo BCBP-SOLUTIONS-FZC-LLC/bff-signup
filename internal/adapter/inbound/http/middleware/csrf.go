@@ -4,6 +4,9 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 )
 
 const csrfHeader = "X-CSRF-Token"
@@ -27,6 +30,7 @@ func CSRFTokenFromContext(c *gin.Context) string {
 
 // ValidateOrigin checks that the Origin header matches the expected host on POST
 // requests (LLD §10.4). Must be used on all state-changing routes.
+// Uses gincommon.AbortWithProblem for RFC 9457-compliant error responses.
 func ValidateOrigin(expectedHost string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost {
@@ -35,11 +39,7 @@ func ValidateOrigin(expectedHost string) gin.HandlerFunc {
 		}
 		origin := c.GetHeader("Origin")
 		if origin == "" || origin != "https://"+expectedHost {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":  "csrf_invalid",
-				"status": http.StatusForbidden,
-			})
-			c.Abort()
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("origin header does not match the signup host").WithCode("CSRF_INVALID"))
 			return
 		}
 		c.Next()
