@@ -54,6 +54,7 @@ type Config struct {
 	// CAPTCHA
 	CaptchaSiteKey      string
 	CaptchaExpectedHost string
+	CaptchaSkip         bool // CAPTCHA_SKIP=true bypasses Turnstile (dev/test only)
 
 	// Password
 	PBKDF2Iterations int
@@ -104,6 +105,7 @@ func Load() (*Config, error) {
 
 		CaptchaSiteKey:      mustEnv("CAPTCHA_SITE_KEY"),
 		CaptchaExpectedHost: envOr("CAPTCHA_EXPECTED_HOSTNAME", "signup.bcbpsolutions.com"),
+		CaptchaSkip:         envBool("CAPTCHA_SKIP"),
 
 		PBKDF2Iterations: envInt("PBKDF2_ITERATIONS", 210000),
 

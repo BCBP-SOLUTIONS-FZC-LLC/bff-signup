@@ -56,8 +56,18 @@ func buildOrgMembership(cfg *config.Config) *orgmembership.Client {
 	return orgmembership.New(cfg.OrgMembershipURL, cfg.I1Timeout())
 }
 
+// noopCaptcha always passes — used when CAPTCHA_SKIP=true (dev/test only).
+type noopCaptcha struct{}
+
+func (noopCaptcha) Verify(_ context.Context, _, _ string) error { return nil }
+
 // buildTurnstile constructs the Cloudflare Turnstile CAPTCHA verifier.
-func buildTurnstile(cfg *config.Config) *turnstile.Client {
+// When CAPTCHA_SKIP=true the verifier is a no-op so local dev curls work
+// without reaching the Cloudflare siteverify endpoint.
+func buildTurnstile(cfg *config.Config) port.CaptchaVerifier {
+	if cfg.CaptchaSkip {
+		return noopCaptcha{}
+	}
 	return turnstile.New(cfg.TurnstileSecret, cfg.CaptchaExpectedHost, cfg.TurnstileTimeout())
 }
 
