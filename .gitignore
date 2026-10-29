@@ -29,5 +29,16 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+# .vscode/   # tracked — contains shared IDE settings (matches O&M convention)
+*.swp
+
+# Binaries
+bin/
+
+# OS
+.DS_Store
+
+# Compiled binary at repo root (should only exist in bin/)
+/server
+/server-*

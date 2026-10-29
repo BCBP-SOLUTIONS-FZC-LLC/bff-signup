@@ -1,0 +1,25 @@
+graph TD
+    subgraph session["Session (sbff:sess:<sid>)"]
+        s1["TTL: 30 min sliding\nValue: {csrf_hash, signup_id, created_at}\nWritten: SB-1  Read: SB-2/SB-3/SB-4"]
+    end
+
+    subgraph handoff["Handoff (sbff:handoff:<signup_id>)"]
+        h1["TTL: 30 min (10 min after completed)\nValue: Handoff JSON — state machine record\nWritten: SB-2/SB-3/SB-4  Never holds: password, email, CAPTCHA"]
+    end
+
+    subgraph lock["Distributed lock (sbff:lock:<signup_id>)"]
+        l1["TTL: 15 s (SET NX PX)\nValue: random token\nRelease: Lua script (atomic token check)\nPrevents concurrent SB-2/SB-3/SB-4 races"]
+    end
+
+    subgraph ratelimits["Rate limit counters (INCR + EXPIRE)"]
+        r1["sbff:rl:ip:<ip>\nTTL: 1 h · Limit: 3/IP/hour\nWritten: SB-2 (after CAPTCHA)"]
+        r2["sbff:rl:email:<HMAC(email)>\nTTL: 24 h · Limit: 5/email/24h\nEmail never stored — only HMAC-SHA256"]
+        r3["sbff:rl:sess:<ip>\nTTL: 1 h · Limit: 20 sessions/IP/hour\nWritten: SB-1"]
+        r4["sbff:rl:poll:<sid>\nTTL: 1 min · Limit: 60 polls/session/min\nWritten: SB-3"]
+    end
+
+    Valkey["Valkey\n(ElastiCache, TLS+AUTH, no snapshots)"]
+    Valkey --> session
+    Valkey --> handoff
+    Valkey --> lock
+    Valkey --> ratelimits

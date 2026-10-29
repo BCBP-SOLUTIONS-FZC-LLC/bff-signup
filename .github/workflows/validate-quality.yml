@@ -1,0 +1,138 @@
+# Reusable workflow — quality gate.
+# fmt · tidy · vet · lint · arch-lint · vuln-check · Dockerfile pin check ·
+# metric naming · Swagger staleness · Helm lint + template + kubeconform.
+# Called by ci.yml. Must pass before image push.
+name: Validate / Quality
+
+"on":
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to check out (leave empty to use the caller ref)'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            go.mod
+
+      - name: Configure private module access
+        run: |
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com" > ~/.git-credentials
+          chmod 600 ~/.git-credentials
+
+      - name: Download modules
+        env:
+          GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+          GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Reject HTML-escaped operators in workflow files
+        run: |
+          if grep -REn '&(gt|lt|amp)' .github/workflows/ .github/scripts/; then
+            echo "::error::Workflow or script files contain HTML entities. Use literal operators instead."
+            exit 1
+          fi
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "${unformatted}" ]; then
+            echo "${unformatted}" | while IFS= read -r f; do
+              echo "::error file=${f},title=Format check::Not formatted — run 'make fmt'"
+            done
+            exit 1
+          fi
+
+      - name: Tidy check
+        run: |
+          make tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "::error file=go.mod,title=Module drift::go.mod or go.sum is stale — run 'go mod tidy' and commit the result."
+            exit 1
+          fi
+
+      - name: Vet
+        run: make vet
+
+      - name: Cache golangci-lint binary
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/go/bin
+          key: golangci-lint-${{ runner.os }}-v2.12.1
+
+      - name: Install golangci-lint
+        run: |
+          if ! command -v golangci-lint >/dev/null 2>&1; then
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
+          fi
+
+      - name: Lint
+        run: make lint
+
+      - name: Architecture lint
+        run: bash .github/scripts/arch-lint.sh
+
+      - name: Vulnerability check
+        run: |
+          if ! make vuln-check; then
+            echo "::error file=go.mod,title=Vulnerability found::govulncheck detected vulnerabilities — run 'make vuln-check' locally."
+            exit 1
+          fi
+
+      - name: Dockerfile base image digest check
+        run: |
+          if grep -E '^FROM [^ @]+:[^ @]+( AS .+)?$' Dockerfile; then
+            echo "::error file=Dockerfile,title=Unpinned base image::FROM lines must use digest-pinned references. Run 'make pin-base-images' to update."
+            exit 1
+          fi
+          echo "Dockerfile base images are digest-pinned."
+
+      - name: Metric naming convention check (bff_signup_* Tier 3 + platform_* Tier 1)
+        run: bash .github/scripts/check-metric-naming.sh
+
+      - name: Metrics registry lint (Proposed metrics must not be alerting/SLO sources)
+        run: bash .github/scripts/metrics-registry-lint.sh
+
+      - name: Observability sink lint (all logs/metrics/traces must pass through platform-gincommon)
+        run: bash .github/scripts/check-log-sink.sh
+
+      - name: Swagger staleness check
+        run: bash .github/scripts/check-swagger-stale.sh
+
+      - name: Cache helm + kubeconform binaries
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/go/bin
+          key: helm-check-tools-${{ runner.os }}-helm3.16.3-kubeconform0.6.7
+
+      - name: Helm lint + template + kubeconform
+        run: bash .github/scripts/helm-check.sh

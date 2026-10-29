@@ -1,0 +1,374 @@
+basePath: /api/v1/signup
+definitions:
+  domain.PasswordPolicy:
+    properties:
+      max_length:
+        type: integer
+      min_length:
+        type: integer
+      not_email:
+        type: boolean
+      require_classes:
+        type: integer
+    type: object
+  domain.Plan:
+    enum:
+    - starter
+    - pro
+    - enterprise
+    type: string
+    x-enum-varnames:
+    - PlanStarter
+    - PlanPro
+    - PlanEnterprise
+  domain.PlanInfo:
+    properties:
+      code:
+        $ref: '#/definitions/domain.Plan'
+      name:
+        type: string
+      trial_days:
+        type: integer
+    type: object
+  domain.SlugRules:
+    properties:
+      max:
+        type: integer
+      min:
+        type: integer
+      pattern:
+        type: string
+    type: object
+  http.CaptchaInfo:
+    properties:
+      provider:
+        type: string
+      site_key:
+        type: string
+    type: object
+  http.ErrorResponse:
+    properties:
+      details:
+        additionalProperties: {}
+        type: object
+      error:
+        type: string
+      request_id:
+        type: string
+      status:
+        type: integer
+      trace_id:
+        type: string
+    type: object
+  http.SessionResponse:
+    properties:
+      captcha:
+        $ref: '#/definitions/http.CaptchaInfo'
+      csrf_token:
+        type: string
+      password_policy:
+        $ref: '#/definitions/domain.PasswordPolicy'
+      plans:
+        items:
+          $ref: '#/definitions/domain.PlanInfo'
+        type: array
+      signup_id:
+        type: string
+      slug_rules:
+        $ref: '#/definitions/domain.SlugRules'
+    type: object
+  http.SlugChangeRequest:
+    properties:
+      slug:
+        type: string
+    required:
+    - slug
+    type: object
+  http.SlugTakenResponse:
+    properties:
+      details:
+        properties:
+          signup_id:
+            type: string
+          suggestions:
+            items:
+              type: string
+            type: array
+        type: object
+      error:
+        type: string
+      request_id:
+        type: string
+      status:
+        type: integer
+    type: object
+  http.StatusResponse:
+    properties:
+      action:
+        type: string
+      message:
+        type: string
+      poll_after_ms:
+        type: integer
+      signup_id:
+        type: string
+      status:
+        type: string
+    type: object
+  http.TrialSignupRequest:
+    properties:
+      accept_terms:
+        type: boolean
+      admin_email:
+        type: string
+      admin_name:
+        type: string
+      captcha_token:
+        type: string
+      company_name:
+        type: string
+      password:
+        type: string
+      plan:
+        $ref: '#/definitions/domain.Plan'
+      slug:
+        type: string
+      terms_version:
+        type: string
+    required:
+    - admin_email
+    - admin_name
+    - captcha_token
+    - company_name
+    - password
+    - plan
+    - terms_version
+    type: object
+  http.TrialSignupResponse:
+    properties:
+      email_verification_sent:
+        type: boolean
+      next:
+        type: string
+      poll_after_ms:
+        type: integer
+      signup_id:
+        type: string
+      status:
+        type: string
+    type: object
+host: signup.bcbpsolutions.com
+info:
+  contact:
+    email: sharmila.dayalan@bcbpsolutions.com
+    name: BCBP Solutions — Web / Growth
+  description: |-
+    Public trial-signup BFF for the XpertPMS platform.
+
+    **Unauthenticated.** All routes are public — no JWT or tenant identity at signup time.
+    Session identity is established by SB-1 (cookie + CSRF token); every state-changing route requires both.
+
+    **Flow.** SB-1 → SB-2 → (if 202) poll SB-3 → (if 409 slug_taken) SB-4.
+
+    **Rate limits.** 3 signups per IP per hour; 5 attempts per email per 24 hours; 20 sessions per IP per hour; 60 status polls per session per minute.
+  license:
+    name: Proprietary
+  title: Signup BFF API
+  version: 0.1.0
+paths:
+  /{signup_id}/slug:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Retries I-1 tenant creation with a new slug. The Keycloak user from RP-1 is reused.
+        Requires the handoff to be in slug_conflict state (signalled by SB-2 or SB-3 returning 409 slug_taken).
+      parameters:
+      - description: CSRF token from SB-1
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Signup ID from SB-1
+        in: path
+        name: signup_id
+        required: true
+        type: string
+      - description: New slug
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.SlugChangeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Signup fully provisioned with new slug
+          schema:
+            $ref: '#/definitions/http.TrialSignupResponse'
+        "202":
+          description: I-1 still in progress — poll SB-3
+          schema:
+            $ref: '#/definitions/http.TrialSignupResponse'
+        "400":
+          description: Slug validation failed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "401":
+          description: Session expired or missing
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: CSRF token invalid
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Signup not found or does not belong to this session
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: New slug also taken — try again
+          schema:
+            $ref: '#/definitions/http.SlugTakenResponse'
+      security:
+      - SessionCookie: []
+      - CSRFToken: []
+      summary: Change slug after conflict (SB-4)
+      tags:
+      - signup
+  /{signup_id}/status:
+    get:
+      description: |-
+        Returns the current handoff state. Poll every `poll_after_ms` milliseconds after a 202 from SB-2.
+        When status is "action_required" with action "choose_slug", submit SB-4 with a new slug.
+        After 15 minutes in "provisioning", status becomes "failed".
+      parameters:
+      - description: Signup ID returned by SB-1
+        in: path
+        name: signup_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.StatusResponse'
+        "401":
+          description: Session expired or missing
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Signup not found or does not belong to this session
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "429":
+          description: Too many status polls
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - SessionCookie: []
+      summary: Poll provisioning status (SB-3)
+      tags:
+      - signup
+  /session:
+    get:
+      description: |-
+        Creates an `sbff_sid` session cookie (30-min sliding TTL) and returns a CSRF token.
+        Rate-limited to 20 session starts per IP per hour.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.SessionResponse'
+        "429":
+          description: Too many session starts from this IP
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "503":
+          description: Valkey unavailable (fail-closed)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      summary: Start signup session (SB-1)
+      tags:
+      - session
+  /trial:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Runs the provisioning handoff. Returns 201 when fully provisioned, 202 when I-1 is still
+        in progress (poll SB-3), or 409 when the slug is already taken (submit SB-4 with a new slug).
+        Requires the session cookie and X-CSRF-Token header from SB-1.
+        Rate-limited: 3 signups per IP per hour; 5 attempts per email per 24 hours.
+      parameters:
+      - description: CSRF token from SB-1
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Signup form payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.TrialSignupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Signup fully provisioned
+          schema:
+            $ref: '#/definitions/http.TrialSignupResponse'
+        "202":
+          description: Keycloak user created; tenant still provisioning — poll SB-3
+          schema:
+            $ref: '#/definitions/http.TrialSignupResponse'
+        "400":
+          description: Validation failed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "401":
+          description: Session expired or missing
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: CSRF token invalid or CAPTCHA failed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: Slug already taken — submit SB-4 with a new slug
+          schema:
+            $ref: '#/definitions/http.SlugTakenResponse'
+        "429":
+          description: Rate limit exceeded
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "503":
+          description: Dependency unavailable (Valkey, Turnstile, RP-1)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - SessionCookie: []
+      - CSRFToken: []
+      summary: Submit trial signup form (SB-2)
+      tags:
+      - signup
+securityDefinitions:
+  CSRFToken:
+    description: CSRF token returned by SB-1 (GET /session). Required on all state-changing
+      routes (POST). Must match the hash stored in the session cookie.
+    in: header
+    name: X-CSRF-Token
+    type: apiKey
+  SessionCookie:
+    description: Session cookie set by SB-1 (GET /session). HttpOnly; Secure; SameSite=Strict;
+      30-minute sliding TTL.
+    in: cookie
+    name: sbff_sid
+    type: apiKey
+swagger: "2.0"

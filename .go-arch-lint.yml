@@ -1,0 +1,122 @@
+version: 3
+workdir: .
+
+allow:
+  depOnAnyVendor: true
+  deepScan: false
+
+exclude:
+  - test
+  - scripts
+  - deploy
+
+excludeFiles:
+  - '.*_test\.go$'
+
+components:
+  domain:
+    in: internal/core/domain
+
+  port:
+    in: internal/core/port
+
+  service:
+    in: internal/core/service
+
+  config:
+    in: internal/config
+
+  signupctx:
+    in: pkg/signupctx
+
+  docs_swagger:
+    in: docs/swagger
+
+  middleware:
+    in: internal/adapter/inbound/http/middleware
+
+  # observability: instrumentation only. Nil-safe helpers mean callers (service,
+  # adapters_outbound) import this directly — same pattern as iam-org-membership.
+  # Collectors are nil until metrics.Register() runs, so unit tests are safe.
+  observability:
+    in: internal/adapter/outbound/metrics
+
+  adapters_inbound:
+    in:
+      - internal/adapter/inbound/http
+
+  adapters_outbound:
+    in:
+      - internal/adapter/outbound/valkey
+      - internal/adapter/outbound/realmprovisioner
+      - internal/adapter/outbound/orgmembership
+      - internal/adapter/outbound/turnstile
+      - internal/adapter/outbound/catalog
+      - internal/adapter/outbound/hasher
+
+  cmd:
+    in:
+      - cmd/server
+
+deps:
+  domain:
+    anyVendorDeps: true
+
+  port:
+    mayDependOn:
+      - domain
+
+  signupctx:
+    anyVendorDeps: true
+    mayDependOn:
+      - port
+
+  # observability: instrumentation only — may not import business logic.
+  observability:
+    anyVendorDeps: true
+
+  service:
+    mayDependOn:
+      - domain
+      - port
+      - observability
+
+  config:
+    mayDependOn:
+      - domain
+
+  middleware:
+    anyVendorDeps: true
+    mayDependOn:
+      - port
+
+  adapters_inbound:
+    mayDependOn:
+      - service
+      - port
+      - domain
+      - signupctx
+      - docs_swagger
+      - middleware
+
+  adapters_outbound:
+    mayDependOn:
+      - port
+      - domain
+      - observability
+
+  docs_swagger:
+    anyVendorDeps: true
+
+  cmd:
+    mayDependOn:
+      - domain
+      - port
+      - service
+      - config
+      - signupctx
+      - adapters_inbound
+      - adapters_outbound
+      - docs_swagger
+      - middleware
+      - observability

@@ -1,0 +1,94 @@
+# SLO recording + burn-rate alerts for bff-signup (LLD §11.1).
+#
+# Two SLOs are declared:
+#
+#  SLO-1  Trial signup availability
+#         Target: 99.9% of POST /api/v1/signup/trial requests return a
+#         non-5xx status.
+#
+#  SLO-2  Provisioning success rate
+#         Target: 99% of submitted signups complete provisioning
+#         (reach state=completed within the request window).
+#
+# Recording rules pre-compute the SLI numerator/denominator so alert rules
+# can key off a scalar. SLIs aggregate by (domain, service, environment).
+#
+# Tier 3 metrics used here: bff_signup_provisioning_succeeded_total,
+# bff_signup_form_submitted_total (from internal/adapter/outbound/metrics/business.go).
+# SLO-1 availability reads the gincommon HTTP request duration metric; the exact
+# name is provided by platform-gincommon ObservabilityMiddlewares. This file
+# uses bff_signup_dependency_call_duration_seconds as a proxy until the gincommon
+# HTTP metric name is confirmed. Update the expr once verified.
+#
+# Note: platform_dependency_request_seconds (Tier 1, Proposed — registry.go)
+# is NOT used here until its PlatformRegistry entry flips to StatusCanonical
+# (metrics-registry-lint.sh enforces this).
+
+groups:
+  # ── SLI recording ─────────────────────────────────────────────────────────
+  - name: bff-signup.slo.records
+    interval: 30s
+    rules:
+      # Signup availability proxy: error rate on dependency calls (bff_signup_* Tier 3).
+      # TODO: replace with gincommon HTTP metric once exact name is confirmed.
+      - record: bff:signup_availability_sli:ratio_rate_5m
+        expr: |
+          1 -
+          sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count{outcome="error"}[5m])
+          )
+          /
+          (sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count[5m])
+          ) + 0.001)
+
+      - record: bff:signup_availability_sli:ratio_rate_1h
+        expr: |
+          1 -
+          sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count{outcome="error"}[1h])
+          )
+          /
+          (sum by (domain, service, environment) (
+            rate(bff_signup_dependency_call_duration_seconds_count[1h])
+          ) + 0.001)
+
+      # Provisioning success: completed / submitted.
+      - record: bff:provisioning_success_sli:ratio_rate_5m
+        expr: |
+          sum by (domain, service, environment) (rate(bff_signup_provisioning_succeeded_total[5m]))
+          /
+          (sum by (domain, service, environment) (rate(bff_signup_form_submitted_total[5m])) + 0.001)
+
+  # ── Burn-rate alerts ───────────────────────────────────────────────────────
+  - name: bff-signup.slo.alerts
+    rules:
+      # Fast burn: 5-minute window > 14.4× budget burn rate → outage in progress.
+      - alert: SignupSLOFastBurn
+        expr: |
+          (1 - bff:signup_availability_sli:ratio_rate_5m) > (14.4 * (1 - 0.999))
+        for: 2m
+        labels:
+          severity: critical
+          team: web-growth
+        annotations:
+          summary: bff-signup burning error budget at 14.4× (fast burn — outage)
+          description: >-
+            Signup availability SLO (99.9%) is burning at >14.4× the allowed rate.
+            At this pace the monthly budget exhausts in ~1 hour. Investigate immediately.
+          runbook: "bff-signup/slo-burn"
+
+      # Slow burn: 1-hour window > 2× budget burn rate → gradual degradation.
+      - alert: SignupSLOSlowBurn
+        expr: |
+          (1 - bff:signup_availability_sli:ratio_rate_1h) > (2 * (1 - 0.999))
+        for: 15m
+        labels:
+          severity: warning
+          team: web-growth
+        annotations:
+          summary: bff-signup burning error budget at 2× (slow burn — degradation)
+          description: >-
+            Signup availability SLO (99.9%) has been burning at >2× the allowed rate
+            for 15 minutes. At this pace the monthly budget exhausts in ~3 days.
+          runbook: "bff-signup/slo-burn"

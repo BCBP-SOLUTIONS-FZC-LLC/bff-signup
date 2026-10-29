@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Local commit gates: tidy, formatting, vet, arch-lint.
+# Run 'make lint' separately if golangci-lint is installed.
+set -euo pipefail
+
+echo "[pre-commit] running tidy..."
+make tidy
+
+echo "[pre-commit] running fmt-check..."
+make fmt-check
+
+echo "[pre-commit] running vet..."
+make vet
+
+echo "[pre-commit] running arch-lint..."
+make arch-lint

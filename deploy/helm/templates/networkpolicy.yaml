@@ -1,0 +1,62 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bff-signup.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bff-signup.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "bff-signup.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow public API traffic from Envoy Gateway (LLD §10.1, §13.1)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressControllerNamespaceSelector | nindent 14 }}
+      ports:
+        - port: 8080
+          protocol: TCP
+
+    # Allow Prometheus scrape on the metrics port (monitoring namespace only)
+    {{- if .Values.networkPolicy.metricsIngress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.metricsIngress.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.metricsIngress.podSelector | nindent 14 }}
+      ports:
+        - port: 9090
+          protocol: TCP
+    {{- end }}
+
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Valkey (ElastiCache)
+    - ports:
+        - port: 6379
+          protocol: TCP
+    # IAM services (RP-1, I-1, eligibility, Catalog) via Istio sidecar
+    - ports:
+        - port: 8080
+          protocol: TCP
+    # Turnstile (HTTPS) and OTel collector
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 4317
+          protocol: TCP
+{{- end }}

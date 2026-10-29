@@ -1,0 +1,45 @@
+graph LR
+    domain["internal/core/domain\n(no imports)"]
+    port["internal/core/port\n← domain"]
+    signupctx["pkg/signupctx\n← port"]
+    service["internal/core/service\n← domain, port"]
+    config["internal/config\n← domain"]
+    inbound["internal/adapter/inbound/http\n← domain, port, service, signupctx"]
+    outbound_v["internal/adapter/outbound/valkey\n← domain, port"]
+    outbound_rp["internal/adapter/outbound/realmprovisioner\n← domain, port"]
+    outbound_om["internal/adapter/outbound/orgmembership\n← domain, port"]
+    outbound_t["internal/adapter/outbound/turnstile\n← domain, port"]
+    outbound_c["internal/adapter/outbound/catalog\n← domain, port"]
+    outbound_h["internal/adapter/outbound/hasher\n← domain, port"]
+    cmd["cmd/server\n← all"]
+
+    domain --> port
+    port --> signupctx
+    domain --> service
+    port --> service
+    domain --> config
+    domain --> inbound
+    port --> inbound
+    service --> inbound
+    signupctx --> inbound
+    domain --> outbound_v
+    port --> outbound_v
+    domain --> outbound_rp
+    port --> outbound_rp
+    domain --> outbound_om
+    port --> outbound_om
+    domain --> outbound_t
+    port --> outbound_t
+    domain --> outbound_c
+    port --> outbound_c
+    domain --> outbound_h
+    port --> outbound_h
+    config --> cmd
+    inbound --> cmd
+    outbound_v --> cmd
+    outbound_rp --> cmd
+    outbound_om --> cmd
+    outbound_t --> cmd
+    outbound_c --> cmd
+    outbound_h --> cmd
+    service --> cmd

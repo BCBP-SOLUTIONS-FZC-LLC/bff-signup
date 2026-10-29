@@ -1,0 +1,25 @@
+# Default: every file requires review from the Web/Growth team.
+* @BCBP-SOLUTIONS-FZC-LLC/web-growth-team
+
+# CI/CD workflow changes require explicit sign-off.
+.github/workflows/ @BCBP-SOLUTIONS-FZC-LLC/web-growth-team
+
+# Domain model — errors, handoff state machine, slug rules, password policy.
+# Changes here ripple through every layer and affect signup behaviour.
+internal/core/domain/ @BCBP-SOLUTIONS-FZC-LLC/web-growth-team
+
+# Port interfaces — any change to an outbound contract must be reviewed
+# alongside the corresponding IAM service (RP-1, I-1, trial-eligibility).
+internal/core/port/realm_provisioner.go @BCBP-SOLUTIONS-FZC-LLC/web-growth-team @BCBP-SOLUTIONS-FZC-LLC/iam-team
+internal/core/port/org_membership.go @BCBP-SOLUTIONS-FZC-LLC/web-growth-team @BCBP-SOLUTIONS-FZC-LLC/iam-team
+
+# Password handling — PBKDF2 parameters must stay in sync with the
+# Keycloak trial realm hash policy. Changes require IAM sign-off.
+internal/adapter/outbound/hasher/ @BCBP-SOLUTIONS-FZC-LLC/web-growth-team @BCBP-SOLUTIONS-FZC-LLC/iam-team
+internal/config/config.go @BCBP-SOLUTIONS-FZC-LLC/web-growth-team @BCBP-SOLUTIONS-FZC-LLC/iam-team
+
+# Security-critical middleware — CSRF, session, client IP extraction.
+internal/adapter/inbound/http/middleware/ @BCBP-SOLUTIONS-FZC-LLC/web-growth-team
+
+# Helm chart — deployment config changes require platform/SRE awareness.
+deploy/ @BCBP-SOLUTIONS-FZC-LLC/web-growth-team @BCBP-SOLUTIONS-FZC-LLC/platform-team

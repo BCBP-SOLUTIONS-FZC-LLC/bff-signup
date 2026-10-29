@@ -1,0 +1,23 @@
+stateDiagram-v2
+    [*] --> allocated : SB-2 passes CAPTCHA + rate limit + validation
+
+    allocated --> rejected : eligibility 409 TRIAL_ALREADY_USED\nor RP-1 409 EMAIL_ALREADY_REGISTERED
+    allocated --> allocated : RP-1 5xx after retries (503 to user; resubmit)
+    allocated --> identity_created : RP-1 201 {keycloak_user_id}
+
+    identity_created --> completed : I-1 201/200
+    identity_created --> tenant_pending : I-1 5xx/timeout after 2 retries
+    identity_created --> slug_conflict : I-1 409 SLUG_ALREADY_TAKEN
+
+    tenant_pending --> completed : SB-3 resume succeeds
+    tenant_pending --> failed : 15 min exhausted (~40 polls)
+
+    slug_conflict --> identity_created : SB-4 new slug (max 5 attempts)
+
+    completed --> [*] : TTL 10 min
+    rejected --> [*]
+    failed --> [*] : TTL (backstop may still recover via TenantIdentityProvisioned)
+
+    note right of tenant_pending
+        O&M backstop fires when\nbrowser abandons:\nTenantIdentityProvisioned\n→ tenant-orgm-q consumer
+    end note

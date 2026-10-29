@@ -1,0 +1,17 @@
+replicaCount: 1
+
+env:
+  APP_ENV: "dev"
+  PUBLIC_HOST: "localhost"
+  REALM_PROVISIONER_BASE_URL: "http://iam-realm-provisioner.iam.svc.cluster.local:8080"
+  ORG_MEMBERSHIP_BASE_URL: "http://iam-org-membership.iam.svc.cluster.local:8080"
+  CAPTCHA_EXPECTED_HOSTNAME: "localhost"
+
+# In dev, use a pre-existing secret or pass values manually
+existingSecret: "bff-signup-dev-secrets"
+
+autoscaling:
+  enabled: false
+
+networkPolicy:
+  enabled: false

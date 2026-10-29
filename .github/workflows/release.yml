@@ -1,0 +1,258 @@
+# Triggered by version tags (e.g. v1.0.0 or v1.1.0-rc.1).
+# Pipeline: validate → build (CHANGELOG gate) → docker (CVE scan + SBOM + Cosign) → publish
+name: Release
+
+"on":
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - 'v[0-9]*.[0-9]*.[0-9]*-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  IMAGE_NAME: ghcr.io/bcbp-solutions-fzc-llc/bff-signup
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  BUILDKIT_PROGRESS: plain
+
+jobs:
+  validate-test:
+    name: Validate / Test
+    uses: ./.github/workflows/validate-test.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+    secrets: inherit
+
+  validate-quality:
+    name: Validate / Quality
+    uses: ./.github/workflows/validate-quality.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+    secrets: inherit
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [validate-test, validate-quality]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Verify release tag matches checkout
+        run: bash .github/scripts/verify-release-tag.sh
+
+      - name: Verify CHANGELOG entry exists
+        run: bash .github/scripts/verify-changelog-entry.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Configure private module access
+        run: |
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com" > ~/.git-credentials
+          chmod 600 ~/.git-credentials
+
+      - name: Build binary
+        env:
+          GOPRIVATE: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+          GONOSUMDB: github.com/BCBP-SOLUTIONS-FZC-LLC/*
+        run: |
+          make build
+          ls -lh bin/bff-signup
+
+  docker:
+    name: Docker — CVE scan + SBOM + push
+    runs-on: ubuntu-latest
+    needs: [build]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      actions: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set SOURCE_DATE_EPOCH
+        id: sde
+        run: bash .github/scripts/set-source-date-epoch.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Build image → local (for Trivy scan)
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: bff-signup-release-test
+          cache-from: type=gha
+          build-args: |
+            BUILD_VERSION=${{ env.RELEASE_TAG }}
+            SOURCE_DATE_EPOCH=${{ steps.sde.outputs.SOURCE_DATE_EPOCH }}
+          secrets: |
+            go_private_token=${{ secrets.GO_PRIVATE_TOKEN }}
+
+      - name: Cache Trivy DB
+        uses: actions/cache@v6.1.0
+        with:
+          path: /tmp/trivy-cache
+          key: trivy-db-${{ runner.os }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Trivy scan — CRITICAL/HIGH (exit 1)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bff-signup-release-test
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH,UNKNOWN
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          cache-dir: /tmp/trivy-cache
+
+      - name: Trivy scan — SARIF
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bff-signup-release-test
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '0'
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          cache-dir: /tmp/trivy-cache
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v4.37.4
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Build and push release image
+        id: pushed
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ env.RELEASE_TAG }}
+            SOURCE_DATE_EPOCH=${{ steps.sde.outputs.SOURCE_DATE_EPOCH }}
+          secrets: |
+            go_private_token=${{ secrets.GO_PRIVATE_TOKEN }}
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign image
+        run: |
+          cosign sign --yes \
+            "${{ env.IMAGE_NAME }}@${{ steps.pushed.outputs.digest }}"
+
+      - name: Trivy SBOM — CycloneDX
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ env.IMAGE_NAME }}@${{ steps.pushed.outputs.digest }}"
+          format: cyclonedx
+          output: sbom.cyclonedx.json
+          exit-code: '0'
+          cache-dir: /tmp/trivy-cache
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: sbom-${{ env.RELEASE_TAG }}
+          path: sbom.cyclonedx.json
+          retention-days: 365
+
+      - name: Log image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.pushed.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: bash .github/scripts/log-image-digest.sh
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ env.RELEASE_TAG }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: false
+          files: |
+            sbom.cyclonedx.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

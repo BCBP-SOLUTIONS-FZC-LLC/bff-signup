@@ -1,0 +1,8 @@
+{
+  "title": "bff-signup — Signup Health",
+  "description": "Signup funnel, provisioning success rate, CAPTCHA, rate limiting, and SLO burn.",
+  "schemaVersion": 36,
+  "version": 1,
+  "tags": ["bff", "bff-signup", "signup"],
+  "panels": []
+}

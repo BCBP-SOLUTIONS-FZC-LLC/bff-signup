@@ -1,0 +1,45 @@
+graph TD
+    subgraph cmd["Composition Root — cmd/server/"]
+        main["main.go\nconfig → Valkey ping → stores → clients → services → router → HTTP\ngraceful shutdown: HTTP drain → Valkey close"]
+        wiring["wiring.go\nbuildValkeyClient · buildValkeyStores\nbuildRealmProvisioner · buildOrgMembership\nbuildTurnstile · buildPasswordHasher · buildCatalog"]
+    end
+
+    subgraph inbound["Inbound — internal/adapter/inbound/http/"]
+        router["router.go\nSB-1 GET /session · SB-2 POST /trial\nSB-3 GET /{id}/status · SB-4 POST /{id}/slug\nGET /healthz · GET /readyz"]
+        handlers["handlers.go\nSession · SubmitTrial · GetStatus · ChangeSlug"]
+        mw["middleware/\nsession.go  csrf.go  clientip.go"]
+    end
+
+    subgraph outbound["Outbound — internal/adapter/outbound/"]
+        valkey["valkey/\nsession_store · handoff_store · rate_limiter\nDistributed lock (SET NX PX + Lua release)"]
+        rp["realmprovisioner/\nRP-1: POST /internal/tenants/provision-trial\nIdempotency-Key · RFC 9457 errorCode"]
+        om["orgmembership/\nI-1: POST /internal/tenants\neligibility: POST /internal/trial-eligibility\nRFC 9457 errorCode"]
+        turnstile["turnstile/\nCloudflare siteverify\nhostname verification"]
+        catalog["catalog/\n5-min in-process cache\nstatic plansFallback"]
+        hasher["hasher/\nPBKDF2-SHA512 · 210,000 iters · 16-byte salt\noutput: HashedPasswordSeed JSON"]
+    end
+
+    subgraph core["Core — internal/core/"]
+        service["service/\nsession_service · signup_service\nhandoff_orchestrator · status_service"]
+        port["port/\nSessionStore · HandoffStore · RateLimiter\nRealmProvisioner · OrgMembership\nCaptchaVerifier · Catalog · PasswordHasher\nClock · IDGenerator · BillingClient (stub)"]
+        domain["domain/\nerrors · handoff (7-state machine)\nplan · signup validators · slug"]
+    end
+
+    subgraph pkg["Shared — pkg/"]
+        signupctx["signupctx/\nSignupContext{Session, ClientIP}\nWithContext · FromContext"]
+    end
+
+    main --> wiring
+    main --> router
+    router --> handlers
+    router --> mw
+    handlers --> service
+    service --> port
+    service --> domain
+    valkey -.->|implements| port
+    rp -.->|implements| port
+    om -.->|implements| port
+    turnstile -.->|implements| port
+    catalog -.->|implements| port
+    hasher -.->|implements| port
+    mw --> signupctx

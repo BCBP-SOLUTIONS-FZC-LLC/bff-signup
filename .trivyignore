@@ -1,0 +1,27 @@
+# DLA-4845-1: ca-certificates 20250419~deb12u1 → deb12u2 (removes the
+# distrusted Comodo "AAA Certificate Services" and "emSign ECC Root CA - G3"
+# roots). gcr.io/distroless/static-debian12:nonroot does not yet ship the
+# fixed package; the Dockerfile's pinned digest is already the latest
+# upstream (checked 2026-10-28). The exposure itself is closed: the
+# Dockerfile's certs stage (debian:bookworm-slim, deb12u2) replaces
+# distroless's /etc/ssl/certs/ca-certificates.crt — verified 150 → 148 certs,
+# both roots absent. Trivy still reports the finding only because it reads
+# distroless's dpkg status metadata. The expiry forces a re-check: remove this
+# entry, the certs stage and its COPY, and bump the runtime digest once
+# distroless ships deb12u2.
+# Mirrors iam-org-membership/.trivyignore.
+DLA-4845-1 exp:2026-11-21
+
+# tzdata timezone-database advisories — both apply to the same installed version
+# (2026b-0+deb12u1) that gcr.io/distroless/static-debian12:nonroot ships.
+# Trivy can report either advisory depending on its DB snapshot; suppress both.
+# Not exploitable: the service never loads a zone (no time.LoadLocation,
+# no time/tzdata import, no time.Local use; all timestamps are UTC).
+# Blocked upstream: newest distroless digest (sha256:afa5c872…) still ships
+# tzdata 2026b. Remove both entries and re-pin once distroless ships >= 2026e.
+# Mirrors iam-org-membership/.trivyignore.
+#
+# DLA-4792-1: 2026b → 2026c
+DLA-4792-1 exp:2026-11-30
+# DLA-4854-1: 2026b → 2026e
+DLA-4854-1 exp:2026-11-30

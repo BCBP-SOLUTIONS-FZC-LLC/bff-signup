@@ -1,0 +1,34 @@
+sequenceDiagram
+    autonumber
+    actor B as Browser
+    participant E as Envoy (envoy-gateway-system)
+    participant S as bff-signup
+    participant V as Valkey
+    participant T as Turnstile
+    participant OM as Org & Membership
+    participant RP as Realm Provisioner
+
+    B->>E: GET /api/v1/signup/session
+    E->>S: forward
+    S->>V: SET sbff:sess:<sid> {csrf_hash, signup_id} EX 1800
+    S-->>B: 200 {signup_id, csrf_token, captcha, plans, rules} + Set-Cookie
+
+    B->>E: POST /api/v1/signup/trial (cookie, X-CSRF-Token, form, captcha_token)
+    E->>S: forward (x-envoy-external-address = client IP)
+    Note over S: session + CSRF check · body validation
+    S->>T: siteverify(token, remoteIP) ← CAPTCHA first (SB-INV-5)
+    T-->>S: success
+    S->>V: INCR rl:ip, INCR rl:email ← after CAPTCHA (G-2)
+    S->>V: SET NX lock:<signup_id> PX 15000
+    S->>V: SET handoff {state=allocated, tenant_id=UUIDv7}
+    S->>OM: POST /internal/trial-eligibility {email_hash} (CR-4)
+    OM-->>S: 200 {eligible:true}
+    Note over S: PBKDF2-SHA512 → hashed_password_seed (memory only, SB-INV-2)
+    S->>RP: POST /internal/tenants/provision-trial + Idempotency-Key signup:<tid>:rp1
+    RP-->>S: 201 {keycloak_user_id, email_verification_sent:true}
+    S->>V: handoff.state = identity_created
+    S->>OM: POST /internal/tenants {tenant_id, slug, plan, owner_user_id, default_locale}
+    OM-->>S: 201 {tenant_id}
+    S->>V: handoff.state = completed (TTL 10 min)
+    S-->>B: 201 {status:"completed", next:"check_email"}
+    Note over B: Email verification → Keycloak + app (BFF out of the flow)

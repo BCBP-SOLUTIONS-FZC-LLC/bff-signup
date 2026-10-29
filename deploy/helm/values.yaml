@@ -1,0 +1,137 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/bcbp-solutions-fzc-llc/bff-signup
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by CI to the git SHA
+
+serviceAccount:
+  create: true
+  name: bff-signup       # BFF-1 (decided) — matches SPIFFE identity
+
+service:
+  type: ClusterIP
+  port: 8080
+  metricsPort: 9090
+
+# HPA: CPU-only (PBKDF2 is CPU-bound, LLD §13.1 G-9)
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+# Container resources sized for PBKDF2 headroom (LLD §13.1)
+resources:
+  requests:
+    cpu: "250m"
+    memory: "128Mi"
+  limits:
+    cpu: "1"
+    memory: "256Mi"
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+env:
+  APP_ENV: "prod"
+  APP_PORT: "8080"
+  METRICS_PORT: "9090"
+  PUBLIC_HOST: "signup.bcbpsolutions.com"
+  REQUEST_DEADLINE_MS: "2500"
+  PBKDF2_ITERATIONS: "210000"
+  RATE_SIGNUPS_PER_IP_PER_HOUR: "3"
+  RATE_ATTEMPTS_PER_EMAIL_PER_DAY: "5"
+  RATE_SESSIONS_PER_IP_PER_HOUR: "20"
+  RATE_POLLS_PER_SESSION_PER_MIN: "60"
+  RP_TIMEOUT_MS: "900"
+  I1_TIMEOUT_MS: "300"
+  ELIGIBILITY_TIMEOUT_MS: "150"
+  TURNSTILE_TIMEOUT_MS: "300"
+  REALM_PROVISIONER_BASE_URL: "http://iam-realm-provisioner.iam.svc.cluster.local:8080"
+  ORG_MEMBERSHIP_BASE_URL: "http://iam-org-membership.iam.svc.cluster.local:8080"
+  CAPTCHA_EXPECTED_HOSTNAME: "signup.bcbpsolutions.com"
+  TERMS_CURRENT_VERSION: "2026-09"
+
+networkPolicy:
+  enabled: true
+  # Ingress: only from envoy-gateway-system (API) and monitoring (metrics)
+  ingressControllerNamespaceSelector:
+    kubernetes.io/metadata.name: envoy-gateway-system
+  metricsIngress:
+    enabled: true
+    namespaceSelector:
+      kubernetes.io/metadata.name: monitoring
+    podSelector:
+      app.kubernetes.io/name: prometheus
+
+# Istio ServiceEntry for Turnstile outbound — required when the mesh runs
+# outboundTrafficPolicy: REGISTRY_ONLY (LLD §10.1, §13.1 G-6).
+# Set enabled: true and turnstileHost when REGISTRY_ONLY is enforced in prod.
+serviceEntry:
+  enabled: false   # set true in prod if REGISTRY_ONLY is enforced
+  turnstileHost: challenges.cloudflare.com
+
+serviceMonitor:
+  enabled: true
+  interval: "30s"
+  scrapeTimeout: "10s"
+  additionalLabels: {}
+  relabelings: []
+  namespaceSelector: {}
+
+# Istio AuthorizationPolicy — enable once Istio PeerAuthentication STRICT
+# mode is active in the bff namespace (LLD §10.1, BFF-1).
+istio:
+  authorizationPolicy:
+    enabled: false   # set true in staging/prod once Istio is confirmed
+
+# Ingress — Envoy Gateway HTTPRoute for signup.bcbpsolutions.com (LLD §13.1, BFF-4).
+# Set enabled: true and configure gateway.name once SRE provisions the route.
+ingress:
+  enabled: false
+  gateway:
+    name: ""           # required — name of the Envoy Gateway resource
+    namespace: ""      # optional — defaults to Release.Namespace
+    sectionName: ""    # optional — target a specific listener (e.g. "https")
+
+# Secrets — provided by External Secrets Operator from OpenBao in prod (LLD §10.7, §12).
+# Set existingSecret to the External-Secrets-managed Secret name in prod.
+# In dev, pass values via --set 'secretValues.VALKEY_URL=...' (never commit real values).
+existingSecret: ""
+
+envFromSecret:
+  - VALKEY_URL
+  - SBFF_HMAC_KEY
+  - SBFF_TURNSTILE_SECRET
+  - CAPTCHA_SITE_KEY
+
+secretValues:
+  VALKEY_URL: ""
+  SBFF_HMAC_KEY: ""
+  SBFF_TURNSTILE_SECRET: ""
+  CAPTCHA_SITE_KEY: ""
+
+# Probes
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  failureThreshold: 12   # 60 s startup budget
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+  periodSeconds: 10
+  failureThreshold: 3

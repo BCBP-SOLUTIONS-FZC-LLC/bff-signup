@@ -1,0 +1,198 @@
+# Architecture
+
+This document describes the internal structure, dependency rules, and runtime data flows of `bff-signup`.
+
+`bff-signup` is the platform's **public, unauthenticated trial-signup intake** — the only internet-facing service that accepts requests without a JWT. It enforces abuse controls (CAPTCHA, rate limits, CSRF) and runs the provisioning handoff: eligibility check → RP-1 (Keycloak user) → I-1 (tenant row). It owns no business data and no database; state is ephemeral Valkey only.
+
+---
+
+## Layer model
+
+Clean Architecture with hexagonal adapter layout. Inner layers have **zero knowledge** of outer layers; dependencies always point inward. Enforced by `go-arch-lint` (`.go-arch-lint.yml`).
+
+```mermaid
+graph TD
+    subgraph cmd["Composition Root — cmd/server/"]
+        main["main.go\nconfig validation → Valkey ping → stores → clients → services → router → HTTP server\ngraceful shutdown: HTTP drain → Valkey close"]
+        wiring["wiring.go\nbuildValkeyClient · buildValkeyStores\nbuildRealmProvisioner · buildOrgMembership\nbuildTurnstile · buildPasswordHasher · buildCatalog · buildBilling (stub §19)"]
+    end
+
+    subgraph adapters_in["Inbound Adapters — internal/adapter/inbound/http/"]
+        router["router.go\nSB-1 GET /session · SB-2 POST /trial · SB-5 POST /paid (§19)\nSB-3 GET /{id}/status · SB-4 POST /{id}/slug\nGET /healthz · GET /readyz"]
+        handlers["handlers.go\nSession · SubmitTrial · SubmitPaid (§19) · GetStatus · ChangeSlug"]
+        middleware["middleware/\nsession.go — cookie extract + Set-Cookie (SameSite=Strict)\ncsrf.go — X-CSRF-Token extract + Origin validation\nclientip.go — x-envoy-external-address (never X-Forwarded-For)"]
+        dto["dto.go — request/response DTOs\nerrors.go — domain error → HTTP status mapping"]
+    end
+
+    subgraph adapters_out["Outbound Adapters — internal/adapter/outbound/"]
+        valkey_s["valkey/\nsession_store.go — sbff:sess: (TTL from SESSION_TTL_SECONDS, sliding)\nhandoff_store.go — sbff:handoff: + distributed lock (SET NX PX 15s Lua release)\nrate_limiter.go — sbff:rl:ip/email/sess/poll counters (fixed-window Lua script)"]
+        rp["realmprovisioner/\nRP-1 POST /internal/tenants/provision-trial · Key: signup:tenantID:rp1\nRP-2 POST /internal/tenants/provision-direct · Key: signup:tenantID:rp2 (§19)\nRFC 9457 errorCode branching · ObserveDependencyCall (latency + outcome)"]
+        om["orgmembership/\nI-1 POST /internal/tenants (idempotent on tenant_id)\neligibility POST /internal/trial-eligibility (150 ms context)\nPUB-1 GET /public/tenants/resolve (fail-open)\nObserveDependencyCall for all 3 operations"]
+        turnstile["turnstile/\nCloudflare siteverify + hostname check\nObserveDependencyCall"]
+        catalog["catalog/\n5-min in-process cache + singleflight (thundering-herd prevention)\nstatic plansFallback on failure · ObserveDependencyCall"]
+        hasher["hasher/\nPBKDF2-SHA512 · 210,000 iterations · 16-byte salt\noutput: HashedPasswordSeed JSON → RP-1\nplain password zeroed after use (SB-INV-2)"]
+    end
+
+    subgraph core["Core — internal/core/"]
+        service["service/\nsession_service.go — SB-1: create session, CSRF validation\nsignup_service.go — SB-2 trial: CAPTCHA → rate-limit → validate → hash → orchestrate\npaid_signup_service.go — SB-5 paid: Billing → RP-2 → I-1 (Phase 1.5, §19)\nhandoff_orchestrator.go — eligibility → RP-1 → I-1 inline (retry) → 202 on exhaust\nstatus_service.go — SB-3: resume I-1 · SB-4: change slug"]
+        port["port/\nSessionStore · HandoffStore · RateLimiter\nRealmProvisioner (RP-1 + RP-2) · OrgMembership\nCaptchaVerifier · Catalog · PasswordHasher\nBillingClient (stub → real in Phase 1.5, §19)\nClock · IDGenerator"]
+        domain["domain/\nerrors.go — sentinel errors + DomainError{Cause,Message,Details}\nhandoff.go — Handoff record + HandoffState (7 states)\nplan.go — Plan type (starter|pro|enterprise only)\nsignup.go — field validators (company, name, email, password)\nslug.go — derive · validate · suggest"]
+    end
+
+    subgraph pkg_grp["Shared — pkg/"]
+        signupctx["signupctx/\nSignupContext{Session, ClientIP}\nWithContext · FromContext · MustFromContext"]
+    end
+
+    subgraph tests["Tests — test/"]
+        unit["unit/\ndomain/ — slug · password · handoff state machine\nservice/ — signup flow · CAPTCHA order · plan invariants"]
+        integration["integration/ (build tag: integration)\nReal Valkey via docker-compose / CI service container:\nsession CRUD · handoff state update · lock acquire/release · rate counters"]
+        fixtures["fixtures/\nFakeSessionStore · FakeHandoffStore · FakeRateLimiter\nFakeCaptchaVerifier · FakeRealmProvisioner (ProvisionTrial + ProvisionDirect)\nFakeBillingClient · FakeOrgMembership · FakeClock · FakeIDGenerator · FakePasswordHasher"]
+    end
+
+    main    --> wiring
+    main    --> router
+    router  --> handlers
+    router  --> middleware
+    handlers --> service
+    service --> port
+    service --> domain
+    valkey_s -.->|implements| port
+    rp       -.->|implements| port
+    om       -.->|implements| port
+    turnstile -.->|implements| port
+    catalog  -.->|implements| port
+    hasher   -.->|implements| port
+    middleware --> signupctx
+```
+
+---
+
+## Dependency rules
+
+```
+domain   ← imports nothing internal
+port     ← domain only
+service  ← domain + port  (never adapters)
+inbound  ← domain + port + service + signupctx
+outbound ← domain + port
+cmd      ← everything (only cmd wires adapters to ports)
+```
+
+No package imports a Keycloak client library (**SB-INV-6**). Enforced at CI by `go-arch-lint`.
+
+---
+
+## Request flows
+
+### SB-2 happy path — POST /trial
+
+```mermaid
+sequenceDiagram
+    actor B as Browser
+    participant E as Envoy (envoy-gateway-system)
+    participant S as bff-signup
+    participant V as Valkey
+    participant T as Turnstile
+    participant OM as Org & Membership
+    participant RP as Realm Provisioner
+
+    B->>E: POST /api/v1/signup/trial (cookie + X-CSRF-Token + form)
+    E->>S: x-envoy-external-address = client IP
+    Note over S: session + CSRF check
+    S->>T: siteverify(token, remoteIP) ← CAPTCHA first (SB-INV-5)
+    T-->>S: success
+    S->>V: INCR rl:ip, INCR rl:email  ← rate limits after CAPTCHA (G-2)
+    S->>V: SET NX lock:signup_id PX 15000
+    S->>V: SET handoff {state=allocated, tenant_id=UUIDv7}
+    S->>OM: POST /internal/trial-eligibility {email_hash}
+    OM-->>S: 200 eligible
+    Note over S: PBKDF2-SHA512 → hashed_password_seed (memory only, SB-INV-2)
+    S->>RP: POST /internal/tenants/provision-trial + Idempotency-Key
+    RP-->>S: 201 {keycloak_user_id}
+    S->>V: handoff.state = identity_created
+    S->>OM: POST /internal/tenants {tenant_id, slug, plan, owner_user_id}
+    OM-->>S: 201
+    S->>V: handoff.state = completed (TTL 10 min)
+    S-->>B: 201 {status:"completed", next:"check_email"}
+```
+
+### I-1 failure — 202 + resume via SB-3
+
+When I-1 fails after RP-1 succeeds: inline retries (×2, 100ms/250ms) → `tenant_pending` → `202`. Browser polls SB-3; StatusService acquires lock and retries I-1 once per poll. After 15 min → `failed`. O&M backstop (`TenantIdentityProvisioned` consumer) recovers abandoned signups independently.
+
+---
+
+## Handoff state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> allocated : SB-2/SB-5 passes checks
+
+    %% Trial path (SB-2)
+    allocated --> rejected : ineligible / email unavailable (trial)
+    allocated --> identity_created : RP-1 201 (trial)
+
+    %% Paid path (SB-5, Phase 1.5 §19)
+    allocated --> payment_pending : Billing call in flight (paid)
+    payment_pending --> payment_confirmed : billing_subscription_id obtained
+    payment_confirmed --> identity_created : RP-2 201 (paid)
+    payment_confirmed --> slug_conflict : PUB-1 slug taken (paid)
+
+    %% Shared from identity_created
+    identity_created --> completed : I-1 201/200
+    identity_created --> tenant_pending : I-1 5xx after retries
+    identity_created --> slug_conflict : I-1 409 SLUG_ALREADY_TAKEN
+    tenant_pending --> completed : SB-3 resume
+    tenant_pending --> failed : 15 min exhausted
+    slug_conflict --> identity_created : SB-4 new slug
+    completed --> [*] : TTL 10 min
+```
+
+---
+
+## Security architecture
+
+| Control | Mechanism | Layer |
+|---|---|---|
+| Bot prevention | Cloudflare Turnstile (invisible, every SB-2); CAPTCHA must pass before any rate-limit increment (SB-INV-5) | Outbound adapter |
+| CSRF | Synchronizer token (SHA-256 in session, `X-CSRF-Token` header, `subtle.ConstantTimeCompare`) | Middleware |
+| Origin check | `Origin` header must equal `signup.bcbpsolutions.com` on every POST | Middleware |
+| Clickjacking | `X-Frame-Options: DENY` on every response | Middleware |
+| Referrer leak | `Referrer-Policy: strict-origin-when-cross-origin` on every response | Middleware |
+| Slowloris | `ReadHeaderTimeout: 5s` on the HTTP server | `main.go` |
+| Rate limiting | Fixed-window Lua script (not sliding); per-IP: 3/hour; per-email: 5/24h; per-session: 20/hour; polls: 60/min | Valkey counters |
+| Body size | `MaxBytesReader` + Content-Length fast-path; 16 KB hard cap | Middleware |
+| CAPTCHA_SKIP guard | `config.Validate()` rejects `CAPTCHA_SKIP=true` when `APP_ENV` ≠ dev/test/local | Config |
+| Client IP | `x-envoy-external-address` only — never `X-Forwarded-For` | Middleware |
+| Password | PBKDF2-SHA512, 210,000 iterations, 16-byte salt; plain text never leaves process memory; derived key zeroed after encoding | Hasher adapter |
+| Email privacy | HMAC-SHA256(email, SBFF_HMAC_KEY) in Valkey — raw email never stored or logged; comparison uses `subtle.ConstantTimeCompare` | Service layer |
+| Handoff race guard | Distributed lock acquired before deleting StateAllocated handoff on resubmit-with-different-details | Service layer |
+| Mesh identity | SPIFFE `spiffe://<trust>/ns/bff/sa/bff-signup`; Istio mTLS to RP-1 and I-1 | Istio sidecar |
+| Session isolation | SB-3/SB-4 reject `signup_id` not owned by caller's session | Service layer |
+
+---
+
+## Valkey key catalogue (LLD §4.1)
+
+| Key | TTL | Purpose |
+|---|---|---|
+| `sbff:sess:<sid>` | 30 min sliding | Session: csrf_hash, signup_id |
+| `sbff:handoff:<signup_id>` | 30 min (10 min after completed) | Provisioning state |
+| `sbff:lock:<signup_id>` | 15 s | Distributed lock (SET NX PX) |
+| `sbff:rl:ip:<ip>` | 1 h | Per-IP signup counter |
+| `sbff:rl:email:<hmac>` | 24 h | Per-email attempt counter |
+| `sbff:rl:sess:<ip>` | 1 h | Per-IP session counter |
+| `sbff:rl:poll:<sid>` | 1 min | Per-session poll counter |
+
+Valkey failure → `503 dependency_unavailable` (fail-closed). No snapshots or backups — losing Valkey loses only in-flight signups and counters; the O&M backstop recovers any `identity_created` signups.
+
+---
+
+## Deployment topology
+
+- **Namespace:** `bff` | **ServiceAccount:** `bff-signup`
+- **Replicas:** 2 min, 5 max | **HPA:** CPU 70% (PBKDF2 is CPU-bound)
+- **Resources:** `250m/1 CPU`, `128Mi/256Mi` memory
+- **Ingress:** only from `envoy-gateway-system` (API :8080) and `monitoring` (:9090)
+- **Egress:** DNS, Valkey :6379, IAM services :8080, Turnstile :443, OTel :4317
+- **Secrets:** External Secrets Operator → OpenBao (`secret/data/bff/bff-signup/*`)
