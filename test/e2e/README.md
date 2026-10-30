@@ -10,7 +10,7 @@ mock servers (O&M :9002, Realm Provisioner :9003). Build tag: `e2e`.
 3. `make run`                             (needs `CAPTCHA_SKIP=true`, `APP_ENV=dev` in `.env`)
 4. `make test-e2e`                        (in another terminal)
 
-Optional: `E2E_VALKEY_CONTAINER=<name> make test-e2e` also runs the "Valkey down" test (SB3-14).
+Optional: `E2E_VALKEY_CONTAINER=<name> make test-e2e` also runs the "Valkey down" tests (SB3-14, SB1-03, SB2-41, H-03, H-04).
 Optional: `E2E_LOG_FILE=<service log>` runs the log checks (start the service with `make run 2>&1 | tee ~/bff-run.log`).
 Other settings: `E2E_BASE_URL`, `E2E_OM_URL`, `E2E_RP_URL`, `E2E_METRICS_URL` (default `http://127.0.0.1:9090`), `E2E_ORIGIN` (must be `https://` + `PUBLIC_HOST` from `.env`).
 
@@ -27,7 +27,8 @@ The mocks must support `GET/DELETE /__mock/requests` (they record the headers an
   `ops_security_test.go` (health, metrics, headers, logs), `inputs_and_downstream_test.go`
   (input boundaries, downstream headers/bodies, locale, SB-2 metrics).
 - Each test name starts with the case ID from the test workbook (for example `TestSB2_47_...`).
-- Stay manual (cannot be automated here): Valkey stopped (SB1-03, SB2-41, H-03, H-04), real Turnstile
+- `valkey_down_test.go` stops Valkey once and checks SB1-03, SB2-41, H-03, H-04 (needs `E2E_VALKEY_CONTAINER`).
+- Stay manual (cannot be automated here): real Turnstile
   (SB2-32/33/36/42, M-07/M-08, SB2-RL01), timing (SB2-37a/b), the `identity_created` state (SB2-52a/53),
   15-minute wait (SB3-05), unreachable (SB3-13), SB5-02 (needs `PAID_SIGNUP_ENABLED=true`),
   SB4-08/13, SB2-RP01 (OBS-41), O-RED05, S-03, X-01/X-02.

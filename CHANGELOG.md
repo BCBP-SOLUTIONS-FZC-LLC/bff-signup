@@ -28,7 +28,7 @@ Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), e
 
 ### Added
 
-- End-to-end tests (`test/e2e`, build tag `e2e`, `make test-e2e`): 166 of the 194 test cases (the fixed gaps and most manually tested cases) (session, validation, handoff, resubmit, status, slug change, health, metrics, logs, downstream headers). See `test/e2e/README.md` for what stays manual.
+- End-to-end tests (`test/e2e`, build tag `e2e`, `make test-e2e`): 170 of the 194 test cases (the fixed gaps and most manually tested cases) (session, validation, handoff, resubmit, status, slug change, health, metrics, logs, downstream headers). See `test/e2e/README.md` for what stays manual.
 - Swagger: SB-2 now documents 413 and the in-progress 409.
 
 ### Known / accepted
