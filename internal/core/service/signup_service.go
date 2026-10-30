@@ -92,6 +92,7 @@ func NewSignupService(
 // The sequence: session validation → CAPTCHA → rate limit → validation →
 // resubmit check → lock → handoff → orchestrate.
 func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResult, error) {
+	in.CompanyName = domain.NormaliseCompanyName(in.CompanyName)
 	metrics.IncFormSubmitted("trial") // LLD §11.2
 
 	// ── 1. CAPTCHA (SB-INV-5: runs before any internal call or CPU work) ─────
