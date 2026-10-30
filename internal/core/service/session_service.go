@@ -102,7 +102,12 @@ func (s *SessionService) ValidateCSRF(ctx context.Context, sid, csrfToken string
 		return nil, domain.NewError(domain.ErrSessionExpired, "missing session cookie")
 	}
 	sess, err := s.sessions.Get(ctx, sid)
-	if err != nil || sess == nil {
+	if err != nil {
+		// A store failure (Valkey down) is not an expired session. Fail closed with
+		// 503 dependency_unavailable so the client retries instead of restarting (N-7).
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "session store unavailable")
+	}
+	if sess == nil {
 		return nil, domain.NewError(domain.ErrSessionExpired, "session expired or not found")
 	}
 	if csrfToken == "" || subtle.ConstantTimeCompare([]byte(hashCSRF(csrfToken)), []byte(sess.CSRFHash)) != 1 {
@@ -113,13 +118,19 @@ func (s *SessionService) ValidateCSRF(ctx context.Context, sid, csrfToken string
 	return sess, nil
 }
 
-// GetSession returns the session for sid, or ErrSessionExpired.
+// GetSession returns the session for sid, ErrSessionExpired when it is missing,
+// or ErrDependencyUnavailable when the session store cannot be read.
 func (s *SessionService) GetSession(ctx context.Context, sid string) (*port.Session, error) {
 	if sid == "" {
 		return nil, domain.NewError(domain.ErrSessionExpired, "missing session cookie")
 	}
 	sess, err := s.sessions.Get(ctx, sid)
-	if err != nil || sess == nil {
+	if err != nil {
+		// A store failure (Valkey down) is not an expired session. Fail closed with
+		// 503 dependency_unavailable so the client retries instead of restarting (N-7).
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "session store unavailable")
+	}
+	if sess == nil {
 		return nil, domain.NewError(domain.ErrSessionExpired, "session expired or not found")
 	}
 	return sess, nil
