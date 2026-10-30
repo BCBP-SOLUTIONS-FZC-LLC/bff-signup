@@ -33,7 +33,7 @@ type RouterConfig struct {
 
 // NewRouter builds the Gin engine with all routes and middleware (LLD §5.2).
 func NewRouter(cfg RouterConfig) *gin.Engine {
-	r := gin.New()
+	r := newEngine()
 
 	// ── Platform observability middleware (metrics, structured logging, tracing) ─
 	// ObservabilityMiddlewares provides: PanicRecovery, RequestID, Tracing,
