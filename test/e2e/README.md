@@ -11,7 +11,7 @@ mock servers (O&M :9002, Realm Provisioner :9003). Build tag: `e2e`.
 4. `make test-e2e`                        (in another terminal)
 
 Optional: `E2E_VALKEY_CONTAINER=<name> make test-e2e` also runs the "Valkey down" test (SB3-14).
-Other settings: `E2E_BASE_URL`, `E2E_OM_URL`, `E2E_RP_URL`.
+Other settings: `E2E_BASE_URL`, `E2E_OM_URL`, `E2E_RP_URL`, `E2E_ORIGIN` (must be `https://` + `PUBLIC_HOST` from `.env`).
 
 ## Notes
 

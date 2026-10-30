@@ -47,6 +47,9 @@ var (
 	omURL   = env("E2E_OM_URL", "http://127.0.0.1:9002")
 	rpURL   = env("E2E_RP_URL", "http://127.0.0.1:9003")
 
+	// The service checks the Origin header on every POST against https://<PUBLIC_HOST>.
+	origin = env("E2E_ORIGIN", "https://localhost:8080")
+
 	httpc = &http.Client{
 		Timeout: 15 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -188,6 +191,7 @@ func (s *session) do(t *testing.T, method, path, contentType string, body []byte
 	req.Header.Set("Cookie", cookieSID+"="+s.sid)
 	if method == http.MethodPost {
 		req.Header.Set("X-CSRF-Token", s.csrf)
+		req.Header.Set("Origin", origin)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
