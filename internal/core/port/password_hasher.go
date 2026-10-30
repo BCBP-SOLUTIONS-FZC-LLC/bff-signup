@@ -10,8 +10,9 @@ type HashedPasswordSeed struct {
 }
 
 // PasswordHasher hashes a plain-text password into the RP-1 seed format.
-// The plain password and resulting seed are zeroed after use where practical
-// and are never logged, stored in Valkey, or sent anywhere except RP-1 (SB-INV-2).
+// The local []byte copy of the password is zeroed in Hash(). The input string
+// and JSON seed string are Go strings and cannot be zeroed. Neither is logged,
+// stored in Valkey, or sent anywhere except RP-1 (SB-INV-2).
 type PasswordHasher interface {
 	Hash(password string) (*HashedPasswordSeed, error)
 }

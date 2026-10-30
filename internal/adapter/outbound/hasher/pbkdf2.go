@@ -43,8 +43,17 @@ func (h *PBKDF2Hasher) Hash(password string) (*port.HashedPasswordSeed, error) {
 		return nil, err
 	}
 
+	// Go strings are immutable and cannot be wiped; the []byte copy we make here
+	// can, so zero it as soon as hashing is done (SB-INV-2, S-05).
+	b := []byte(password)
+	defer func() {
+		for i := range b {
+			b[i] = 0
+		}
+	}()
+
 	start := time.Now()
-	dk := pbkdf2.Key([]byte(password), salt, h.iters, keyLen, sha512.New)
+	dk := pbkdf2.Key(b, salt, h.iters, keyLen, sha512.New)
 	metrics.ObservePasswordHash(time.Since(start)) // LLD §11.2, §10.6
 
 	seed := &port.HashedPasswordSeed{

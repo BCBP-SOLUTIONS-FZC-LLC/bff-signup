@@ -24,7 +24,7 @@ type OrchestratorInput struct {
 	Handoff            *domain.Handoff
 	AdminEmail         string
 	AdminName          string
-	HashedPasswordSeed string               // JSON-serialised; zeroed after RP-1 call
+	HashedPasswordSeed string               // JSON-serialised; Go string, not zeroable — never logged, stored in Valkey, or retained after RP-1 (SB-INV-2)
 	TermsAcceptance    port.TermsAcceptance // forwarded to RP-1 for Audit Log record (A-4)
 }
 

@@ -20,7 +20,7 @@ type SignupInput struct {
 	Slug          string // may be empty → derived
 	AdminName     string
 	AdminEmail    string
-	Password      string // plain; zeroed after hashing (SB-INV-2)
+	Password      string // plain; Go strings are not zeroable — the []byte copy inside hasher.Hash is zeroed (SB-INV-2)
 	Plan          domain.Plan
 	AcceptTerms   bool
 	TermsVersion  string
