@@ -34,6 +34,7 @@ type SignupInput struct {
 // SignupResult is the SB-2 response payload.
 type SignupResult struct {
 	SignupID              string
+	TenantID              string // for log correlation only (SB2-66); never returned to the client
 	State                 domain.HandoffState
 	EmailVerificationSent bool
 	SlugSuggestions       []string // set when State == slug_conflict
@@ -106,7 +107,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		switch prior.State { //nolint:exhaustive
 		case domain.StateIdentityCreated, domain.StateTenantPending, domain.StateSlugConflict:
 			if hmacEqual(prior.AdminEmailHMAC, emailHMAC) {
-				return &SignupResult{SignupID: prior.SignupID, State: prior.State}, nil
+				return &SignupResult{SignupID: prior.SignupID, TenantID: prior.TenantID, State: prior.State}, nil
 			}
 		}
 	}
@@ -229,6 +230,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		if orcResult != nil && isDomainCause(err, domain.ErrSlugTaken) {
 			return &SignupResult{
 				SignupID:        signupID,
+				TenantID:        tenantID,
 				State:           orcResult.State,
 				SlugSuggestions: orcResult.SlugSuggestions,
 			}, err
@@ -238,6 +240,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 
 	return &SignupResult{
 		SignupID:              signupID,
+		TenantID:              tenantID,
 		State:                 orcResult.State,
 		EmailVerificationSent: orcResult.EmailVerificationSent,
 		SlugSuggestions:       orcResult.SlugSuggestions,
@@ -309,13 +312,14 @@ func (s *SignupService) handleResubmit(
 				if orcResult != nil && isDomainCause(err, domain.ErrSlugTaken) {
 					return &SignupResult{
 						SignupID:        existing.SignupID,
+						TenantID:        existing.TenantID,
 						State:           orcResult.State,
 						SlugSuggestions: orcResult.SlugSuggestions,
 					}, true, err
 				}
 				return nil, true, err
 			}
-			return &SignupResult{SignupID: existing.SignupID, State: orcResult.State,
+			return &SignupResult{SignupID: existing.SignupID, TenantID: existing.TenantID, State: orcResult.State,
 				SlugSuggestions: orcResult.SlugSuggestions}, true, nil
 		}
 		// Different details while RP-1 not confirmed → discard and start fresh.
@@ -337,11 +341,11 @@ func (s *SignupService) handleResubmit(
 				WithDetails(map[string]any{"reason": "details_changed"})
 		}
 		// Resume — no new CAPTCHA hit or rate-limit increment
-		return &SignupResult{SignupID: existing.SignupID, State: existing.State}, true, nil
+		return &SignupResult{SignupID: existing.SignupID, TenantID: existing.TenantID, State: existing.State}, true, nil
 
 	case domain.StateCompleted:
 		if hmacEqual(existing.AdminEmailHMAC, emailHMAC) {
-			return &SignupResult{SignupID: existing.SignupID, State: domain.StateCompleted,
+			return &SignupResult{SignupID: existing.SignupID, TenantID: existing.TenantID, State: domain.StateCompleted,
 				EmailVerificationSent: true}, true, nil
 		}
 		return nil, true, domain.NewError(domain.ErrInvalidState, "signup already completed with different details").

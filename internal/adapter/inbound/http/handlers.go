@@ -181,16 +181,14 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 			gincommon.AbortWithProblem(c, domainErrorToProblem(de).WithExtensions(ext))
 			return
 		}
+		h.log.Warn("signup.trial.failed", signupLogFields(c, "submit", "failed", sess.SignupID, "", ""))
 		HandleError(c, err)
 		return
 	}
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
-		h.log.Info("signup.trial.submitted", map[string]interface{}{
-			"signup_id": result.SignupID,
-			"state":     string(result.State),
-		})
+		h.log.Info("signup.trial.submitted", signupLogFields(c, "submit", "success", result.SignupID, result.TenantID, string(result.State)))
 		c.JSON(http.StatusCreated, TrialSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
@@ -321,10 +319,7 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
-		h.log.Info("signup.slug.changed", map[string]interface{}{
-			"signup_id": result.SignupID,
-			"state":     string(result.State),
-		})
+		h.log.Info("signup.slug.changed", signupLogFields(c, "slug_change", "success", result.SignupID, "", string(result.State)))
 		c.JSON(http.StatusCreated, TrialSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
@@ -471,10 +466,7 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
-		h.log.Info("signup.paid.submitted", map[string]interface{}{
-			"signup_id": result.SignupID,
-			"state":     string(result.State),
-		})
+		h.log.Info("signup.paid.submitted", signupLogFields(c, "submit", "success", result.SignupID, "", string(result.State)))
 		c.JSON(http.StatusCreated, PaidSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
