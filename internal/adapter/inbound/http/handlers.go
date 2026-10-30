@@ -122,10 +122,11 @@ func (h *Handlers) Session(c *gin.Context) {
 // @Param        body          body      TrialSignupRequest  true  "Signup form payload"
 // @Success      201  {object}  TrialSignupResponse  "Signup fully provisioned"
 // @Success      202  {object}  TrialSignupResponse  "Keycloak user created; tenant still provisioning — poll SB-3"
-// @Failure      400  {object}  ErrorResponse        "Validation failed"
+// @Failure      400  {object}  ErrorResponse        "Validation failed (includes wrong Content-Type, unknown JSON fields)"
 // @Failure      401  {object}  ErrorResponse        "Session expired or missing"
 // @Failure      403  {object}  ErrorResponse        "CSRF token invalid or CAPTCHA failed"
-// @Failure      409  {object}  SlugTakenResponse    "Slug already taken — submit SB-4 with a new slug"
+// @Failure      409  {object}  SlugTakenResponse    "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry"
+// @Failure      413  {object}  ErrorResponse        "Request body larger than 16 KiB"
 // @Failure      429  {object}  ErrorResponse        "Rate limit exceeded"
 // @Failure      503  {object}  ErrorResponse        "Dependency unavailable (Valkey, Turnstile, RP-1)"
 // @Security     SessionCookie

@@ -102,3 +102,26 @@ type SlugTakenResponse struct {
 	Suggestions []string `json:"suggestions"`
 	Message     string   `json:"message,omitempty"`
 }
+
+// ErrorResponse is the RFC 9457 representation of every non-slug error response.
+// The actual response is built and serialized by gincommon.AbortWithProblem.
+// This type is kept only for Swagger annotation reference (@Failure ... {object} ErrorResponse).
+//
+// Wire shape (application/problem+json):
+//
+//	{
+//	  "type":           "...",
+//	  "title":          "...",
+//	  "status":         409,
+//	  "detail":         "...",
+//	  "errorCode":      "INVALID_STATE",
+//	  "retry_after_ms": 500
+//	}
+type ErrorResponse struct {
+	Type         string `json:"type,omitempty"`
+	Title        string `json:"title"`
+	Status       int    `json:"status"`
+	Detail       string `json:"detail,omitempty"`
+	ErrorCode    string `json:"errorCode,omitempty"`
+	RetryAfterMS int    `json:"retry_after_ms,omitempty"`
+}
