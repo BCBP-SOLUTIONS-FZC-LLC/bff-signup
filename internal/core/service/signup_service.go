@@ -249,6 +249,33 @@ func (s *SignupService) handleResubmit(
 			existing.Plan == in.Plan
 		if sameDetails {
 			// Retry with the same tenant_id and RP-1 idempotency key
+			// Take the handoff lock before re-running the orchestrator (LLD §9.2,
+			// OBS-37). Without it, a second request that arrives while the first is
+			// still waiting on RP-1 would call RP-1 again. If the lock is held, answer
+			// 409 invalid_state with retry_after_ms so the browser re-polls.
+			lockToken, acquired, lockErr := s.handoffs.AcquireLock(ctx, existing.SignupID)
+			if lockErr != nil {
+				return nil, true, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+			}
+			if !acquired {
+				return nil, true, domain.NewError(domain.ErrInvalidState, "another request is already processing this signup").
+					WithDetails(map[string]any{"retry_after_ms": 500})
+			}
+			defer func() {
+				// Lock TTL is 15 s — a release failure is non-fatal; the lock expires on its own.
+				_ = s.handoffs.ReleaseLock(ctx, existing.SignupID, lockToken)
+			}()
+			// The request that held the lock may have finished between our read and
+			// our lock. Re-read; if the handoff moved on, do not run RP-1 again.
+			current, getErr := s.handoffs.Get(ctx, existing.SignupID)
+			if getErr != nil {
+				return nil, true, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+			}
+			if current == nil || current.State != domain.StateAllocated {
+				return nil, true, domain.NewError(domain.ErrInvalidState, "another request just processed this signup").
+					WithDetails(map[string]any{"retry_after_ms": 500})
+			}
+			existing = current
 			metrics.IncHandoffResumed("resubmit") // LLD §11.2
 			seed, err := s.hasher.Hash(in.Password)
 			if err != nil {
