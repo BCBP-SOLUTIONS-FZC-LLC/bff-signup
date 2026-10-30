@@ -106,6 +106,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// SB-2: submit trial (CSRF + session required)
 		v1.POST("/trial",
 			middleware.ValidateOrigin(cfg.PublicHost),
+			middleware.RequireJSON(),
 			requireValidatedSession(cfg.SessionService),
 			cfg.Handlers.SubmitTrial,
 		)
@@ -119,6 +120,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// SB-4: change slug (CSRF + session required)
 		v1.POST("/:signup_id/slug",
 			middleware.ValidateOrigin(cfg.PublicHost),
+			middleware.RequireJSON(),
 			requireValidatedSession(cfg.SessionService),
 			cfg.Handlers.ChangeSlug,
 		)
@@ -128,6 +130,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		if cfg.PaidSignupEnabled {
 			v1.POST("/paid",
 				middleware.ValidateOrigin(cfg.PublicHost),
+				middleware.RequireJSON(),
 				requireValidatedSession(cfg.SessionService),
 				cfg.Handlers.SubmitPaid,
 			)
