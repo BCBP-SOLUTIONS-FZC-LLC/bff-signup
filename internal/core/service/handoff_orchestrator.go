@@ -173,7 +173,32 @@ func (o *HandoffOrchestrator) ChangeSlug(ctx context.Context, h *domain.Handoff,
 	if err := o.handoffs.Update(ctx, h); err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
 	}
-	return o.callI1Once(ctx, h)
+	result, err := o.callI1Once(ctx, h)
+	if err == nil {
+		return result, nil
+	}
+	if isDomainCause(err, domain.ErrSlugTaken) {
+		// New slug is also taken: surface the suggestions and a 409 (A-3).
+		return result, err
+	}
+	if isDomainCause(err, domain.ErrInternal) {
+		// Contract error (LLD §9.5): fail fast, exactly as runI1 does.
+		metrics.IncProvisioningFailed("trial", "org_membership", "contract_error") // LLD §11.2
+		return nil, err
+	}
+	if !isDomainCause(err, domain.ErrDependencyUnavailable) {
+		// Unknown error: pass it through unchanged, as before.
+		return nil, err
+	}
+	// I-1 5xx or timeout (LLD §9.5): the signup must not be left stuck in
+	// identity_created. Park it in tenant_pending so SB-3 polling resumes I-1,
+	// and answer 202 provisioning (OBS-31).
+	h.State = domain.StateTenantPending
+	h.I1Attempts++
+	h.LastError = err.Error()
+	h.UpdatedAt = o.clock.Now()
+	_ = o.handoffs.Update(ctx, h)
+	return &OrchestratorResult{State: domain.StateTenantPending}, nil
 }
 
 // runI1 calls I-1 inline with up to maxI1InlineRetries retries.
