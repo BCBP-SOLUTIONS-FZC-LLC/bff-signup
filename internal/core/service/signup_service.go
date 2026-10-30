@@ -95,14 +95,28 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	in.CompanyName = domain.NormaliseCompanyName(in.CompanyName)
 	metrics.IncFormSubmitted("trial") // LLD §11.2
 
+	// ── 0. Same-email resume (G-1, LLD §5.4) ─────────────────────────────────
+	// A repeat SB-2 on a session whose identity already exists only resumes: it
+	// makes no downstream call and hashes no password, so it needs no new CAPTCHA
+	// and must not use up rate-limit budget (OBS-40). The session id comes from the
+	// validated session cookie, so this cheap read is not attacker-chosen.
+	// A read error is ignored here; step 4 reads again and returns 503.
+	emailHMAC := s.emailHMAC(in.AdminEmail)
+	if prior, getErr := s.handoffs.Get(ctx, in.Session.SignupID); getErr == nil && prior != nil {
+		switch prior.State { //nolint:exhaustive
+		case domain.StateIdentityCreated, domain.StateTenantPending, domain.StateSlugConflict:
+			if hmacEqual(prior.AdminEmailHMAC, emailHMAC) {
+				return &SignupResult{SignupID: prior.SignupID, State: prior.State}, nil
+			}
+		}
+	}
+
 	// ── 1. CAPTCHA (SB-INV-5: runs before any internal call or CPU work) ─────
 	if err := s.captcha.Verify(ctx, in.CaptchaToken, in.ClientIP); err != nil {
 		return nil, err
 	}
 
 	// ── 2. Rate limits (counted after CAPTCHA — G-2) ─────────────────────────
-	emailHMAC := s.emailHMAC(in.AdminEmail)
-
 	ipCount, ipReset, err := s.limiter.IncrIP(ctx, in.ClientIP)
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
