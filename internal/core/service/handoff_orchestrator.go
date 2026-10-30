@@ -194,6 +194,15 @@ func (o *HandoffOrchestrator) runI1(ctx context.Context, h *domain.Handoff) (*Or
 			// a 409 with the suggestions list.
 			return result, err
 		}
+		if isDomainCause(err, domain.ErrInternal) {
+			// Contract error (LLD §9.5): an unexpected 4xx, an unexpected 409 code
+			// or a malformed reply from I-1 will not fix itself, and retrying would
+			// hide it behind a 202. Fail fast: the handoff stays identity_created,
+			// the caller returns 500 internal_error, and the paged contract_error
+			// metric fires. 5xx and timeouts (ErrDependencyUnavailable) still retry.
+			metrics.IncProvisioningFailed("trial", "org_membership", "contract_error") // LLD §11.2
+			return nil, err
+		}
 		lastErr = err
 		if attempt < maxI1InlineRetries {
 			// Short backoff with ±20% jitter to avoid thundering-herd on retry.
