@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
@@ -96,6 +99,11 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	in.CompanyName = domain.NormaliseCompanyName(in.CompanyName)
 	metrics.IncFormSubmitted("trial") // LLD §11.2
 
+	// Business attributes on the request span (LLD §11.3, O-03). IDs and state only:
+	// never email, name or password.
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.String("signup.id", in.Session.SignupID))
+
 	// ── 0. Same-email resume (G-1, LLD §5.4) ─────────────────────────────────
 	// A repeat SB-2 on a session whose identity already exists only resumes: it
 	// makes no downstream call and hashes no password, so it needs no new CAPTCHA
@@ -107,6 +115,10 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		switch prior.State { //nolint:exhaustive
 		case domain.StateIdentityCreated, domain.StateTenantPending, domain.StateSlugConflict:
 			if hmacEqual(prior.AdminEmailHMAC, emailHMAC) {
+				span.SetAttributes(
+					attribute.String("tenant.id", prior.TenantID),
+					attribute.String("handoff.state", string(prior.State)),
+				)
 				return &SignupResult{SignupID: prior.SignupID, TenantID: prior.TenantID, State: prior.State}, nil
 			}
 		}
@@ -176,6 +188,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 
 	// ── 6. Allocate handoff ───────────────────────────────────────────────────
 	tenantID := s.idgen.NewUUIDv7()
+	span.SetAttributes(attribute.String("tenant.id", tenantID))
 	signupID := in.Session.SignupID
 	now := s.clock.Now()
 
@@ -228,6 +241,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		// Slug conflict: return the result (with suggestions) alongside the error
 		// so the handler can include suggestions in the 409 response.
 		if orcResult != nil && isDomainCause(err, domain.ErrSlugTaken) {
+			span.SetAttributes(attribute.String("handoff.state", string(orcResult.State)))
 			return &SignupResult{
 				SignupID:        signupID,
 				TenantID:        tenantID,
@@ -238,6 +252,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		return nil, err
 	}
 
+	span.SetAttributes(attribute.String("handoff.state", string(orcResult.State)))
 	return &SignupResult{
 		SignupID:              signupID,
 		TenantID:              tenantID,
