@@ -28,12 +28,13 @@ Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), e
 
 ### Added
 
-- End-to-end tests for the fixed gaps (`test/e2e`, build tag `e2e`, `make test-e2e`).
+- End-to-end tests (`test/e2e`, build tag `e2e`, `make test-e2e`): 166 of the 194 test cases (the fixed gaps and most manually tested cases) (session, validation, handoff, resubmit, status, slug change, health, metrics, logs, downstream headers). See `test/e2e/README.md` for what stays manual.
 - Swagger: SB-2 now documents 413 and the in-progress 409.
 
 ### Known / accepted
 
 - `govulncheck` reports GO-2026-5932; not reachable (only `pbkdf2` is used). No dependency updates available.
+- Finding for the service owner (OBS-55): RP-1 and eligibility are not retried once on 502/503 as LLD §17.2 says; the service makes one call. Not changed here.
 - Open for the service owner: no preStop pause before shutdown, wide NetworkPolicy egress, `APP_ENV` defaults to `dev` if unset, Istio AuthorizationPolicy and ingress disabled by default in `values.yaml`.
 
 ### Changed — Production hardening: security, correctness, observability (2026-10-28)
