@@ -8,6 +8,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — Test-gap fixes from manual API testing (2026-10-30)
+
+Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), each fixed in its own commit.
+
+- **SB2-07** — unknown or duplicate JSON fields in the request body are now rejected (`strict_json.go`).
+- **SB2-H10** — company name is normalised before validation (`company_name.go`); a body of exactly 16 KiB is accepted, larger returns 413.
+- **SB2-H11 / SB2-H12** — POST requests without `Content-Type: application/json` return 400 (`middleware/content_type.go`).
+- **SB2-48** — I-1 contract errors fail fast instead of retrying (orchestrator `runI1`).
+- **SB2-56 / I-03** — a concurrent double submit of the same signup returns 409 with `retry_after_ms` instead of racing (`handleResubmit` lock).
+- **SB2-I01** — resume probe runs before CAPTCHA and rate limits, so a resume is not blocked by them.
+- **SB3-14** — Valkey error on status lookup returns 503, not 404.
+- **SB4-12** — slug change maps only dependency-unavailable to `tenant_pending`.
+- **S-04** — gin trusted proxies disabled; forged `X-Forwarded-For` no longer bypasses per-IP rate limits (`engine.go`).
+- **SB2-66** — structured logs for submit, slug change and paid submit carry request_id, trace_id, signup_id, tenant_id and state.
+- **I-02** — session TTL and cookie Max-Age slide on SB-3 and SB-2.
+- **S-05** — password bytes are zeroed after PBKDF2.
+- **O-03** — spans carry `signup.id`, `tenant.id` and `handoff.state` (direct OpenTelemetry import, as instructed by the service owner).
+
+### Added
+
+- End-to-end tests for the fixed gaps (`test/e2e`, build tag `e2e`, `make test-e2e`).
+- Swagger: SB-2 now documents 413 and the in-progress 409.
+
+### Known / accepted
+
+- `govulncheck` reports GO-2026-5932; not reachable (only `pbkdf2` is used). No dependency updates available.
+- Open for the service owner: no preStop pause before shutdown, wide NetworkPolicy egress, `APP_ENV` defaults to `dev` if unset, Istio AuthorizationPolicy and ingress disabled by default in `values.yaml`.
+
 ### Changed — Production hardening: security, correctness, observability (2026-10-28)
 
 All changes on branch `bff-signup-initial`. Zero new features — every change is hardening, correctness, or observability.

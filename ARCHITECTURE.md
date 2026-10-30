@@ -30,7 +30,7 @@ graph TD
         om["orgmembership/\nI-1 POST /internal/tenants (idempotent on tenant_id)\neligibility POST /internal/trial-eligibility (150 ms context)\nPUB-1 GET /public/tenants/resolve (fail-open)\nObserveDependencyCall for all 3 operations"]
         turnstile["turnstile/\nCloudflare siteverify + hostname check\nObserveDependencyCall"]
         catalog["catalog/\n5-min in-process cache + singleflight (thundering-herd prevention)\nstatic plansFallback on failure · ObserveDependencyCall"]
-        hasher["hasher/\nPBKDF2-SHA512 · 210,000 iterations · 16-byte salt\noutput: HashedPasswordSeed JSON → RP-1\nplain password zeroed after use (SB-INV-2)"]
+        hasher["hasher/\nPBKDF2-SHA512 · 210,000 iterations · 16-byte salt\noutput: HashedPasswordSeed JSON → RP-1\nplain password bytes and derived key zeroed after use (SB-INV-2)"]
     end
 
     subgraph core["Core — internal/core/"]
@@ -163,7 +163,7 @@ stateDiagram-v2
 | Rate limiting | Fixed-window Lua script (not sliding); per-IP: 3/hour; per-email: 5/24h; per-session: 20/hour; polls: 60/min | Valkey counters |
 | Body size | `MaxBytesReader` + Content-Length fast-path; 16 KB hard cap | Middleware |
 | CAPTCHA_SKIP guard | `config.Validate()` rejects `CAPTCHA_SKIP=true` when `APP_ENV` ≠ dev/test/local | Config |
-| Client IP | `x-envoy-external-address` only — never `X-Forwarded-For` | Middleware |
+| Client IP | `x-envoy-external-address` only — never `X-Forwarded-For`; gin trusted proxies disabled (`SetTrustedProxies(nil)`), so forged forwarded headers are ignored | Middleware / engine |
 | Password | PBKDF2-SHA512, 210,000 iterations, 16-byte salt; plain text never leaves process memory; derived key zeroed after encoding | Hasher adapter |
 | Email privacy | HMAC-SHA256(email, SBFF_HMAC_KEY) in Valkey — raw email never stored or logged; comparison uses `subtle.ConstantTimeCompare` | Service layer |
 | Handoff race guard | Distributed lock acquired before deleting StateAllocated handoff on resubmit-with-different-details | Service layer |
