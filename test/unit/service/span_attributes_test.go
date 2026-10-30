@@ -32,7 +32,7 @@ func recordedSpan(t *testing.T) (context.Context, func() map[string]string) {
 		require.Len(t, ended, 1)
 		out := map[string]string{}
 		for _, kv := range ended[0].Attributes() {
-			out[string(kv.Key)] = kv.Value.Emit()
+			out[string(kv.Key)] = kv.Value.String()
 		}
 		return out
 	}
