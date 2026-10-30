@@ -16,8 +16,9 @@ import (
 // ── FakeSessionStore ──────────────────────────────────────────────────────────
 
 type FakeSessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]*port.Session
+	mu           sync.Mutex
+	sessions     map[string]*port.Session
+	RefreshCount int // number of Refresh calls (I-02)
 }
 
 func NewFakeSessionStore() *FakeSessionStore {
@@ -37,7 +38,12 @@ func (f *FakeSessionStore) Get(_ context.Context, sid string) (*port.Session, er
 	return f.sessions[sid], nil
 }
 
-func (f *FakeSessionStore) Refresh(_ context.Context, sid string) error { return nil }
+func (f *FakeSessionStore) Refresh(_ context.Context, sid string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.RefreshCount++
+	return nil
+}
 
 func (f *FakeSessionStore) Delete(_ context.Context, sid string) error {
 	f.mu.Lock()

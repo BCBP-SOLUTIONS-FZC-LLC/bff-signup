@@ -186,6 +186,9 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 		return
 	}
 
+	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL.
+	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.sessionTTLSecs)
+
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
 		h.log.Info("signup.trial.submitted", signupLogFields(c, "submit", "success", result.SignupID, result.TenantID, string(result.State)))
@@ -243,6 +246,9 @@ func (h *Handlers) GetStatus(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+
+	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL.
+	middleware.SetSessionCookie(c, sid, h.sessionTTLSecs)
 
 	h.log.Debug("signup.status.polled", map[string]interface{}{
 		"signup_id": result.SignupID,

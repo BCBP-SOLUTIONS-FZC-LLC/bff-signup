@@ -133,6 +133,8 @@ func (s *SessionService) GetSession(ctx context.Context, sid string) (*port.Sess
 	if sess == nil {
 		return nil, domain.NewError(domain.ErrSessionExpired, "session expired or not found")
 	}
+	// Slide the 30-min TTL on every read (I-02): polling SB-3 keeps the session alive.
+	_ = s.sessions.Refresh(ctx, sid)
 	return sess, nil
 }
 
