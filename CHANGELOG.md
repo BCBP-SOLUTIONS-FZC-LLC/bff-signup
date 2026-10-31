@@ -26,6 +26,21 @@ Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), e
 - **S-05** — password bytes are zeroed after PBKDF2.
 - **O-03** — spans carry `signup.id`, `tenant.id` and `handoff.state` (direct OpenTelemetry import, as instructed by the service owner).
 
+### Fixed — Spec gaps rectified after E2E testing (2026-10-31)
+
+Code now follows the LLD (SB1-02, SB2-34, SB2-RP01, SB2-43, SB2-44, OBS-41, OBS-51, OBS-55):
+
+- **`Retry-After` header on every 429** (`errors.go`), copied from `details.retry_after_seconds`; the body field stays.
+- **Bounded retries before any user exists** (`handoff_orchestrator.go`, LLD §9.3 / §17.2): eligibility is retried once on 5xx or timeout; RP-1 is retried once on 502/503/timeout and once on 409 `OPERATION_IN_PROGRESS`, always with the same Idempotency-Key; the user then sees 503. New domain error `ErrOperationInProgress` (RP-1 client) keeps this separate from other 409s.
+
+Spec text aligned to the intended behaviour (LLD v1.1; the code was already right) — **decisions for the reviewer**:
+
+1. A resubmit with different details while `allocated` keeps the session's `signup_id` and issues a new `tenant_id` (SB2-51; §5.4 contradicted itself).
+2. A slug conflict is not a `provisioning_failed_total` reason, so the failure-rate alert is not triggered by a user outcome; it is counted in `form_submitted_total` only (SB2-69).
+3. After expiry SB-3 returns `401 session_expired` before any handoff lookup (SB3-13, OBS-33).
+
+Known effect: during a real RP-1 or O&M outage, dependency-call metrics show about twice the failed calls because of the retry.
+
 ### Added
 
 - End-to-end tests (`test/e2e`, build tag `e2e`, `make test-e2e`): 170 of the 194 test cases (the fixed gaps and most manually tested cases) (session, validation, handoff, resubmit, status, slug change, health, metrics, logs, downstream headers). See `test/e2e/README.md` for what stays manual.
