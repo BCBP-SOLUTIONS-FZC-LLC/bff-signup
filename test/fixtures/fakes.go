@@ -58,6 +58,9 @@ type FakeHandoffStore struct {
 	mu       sync.Mutex
 	handoffs map[string]*domain.Handoff
 	locked   map[string]string // signupID → token
+
+	UpdateErr      error // returned by Update when set
+	AcquireLockErr error // returned by AcquireLock when set
 }
 
 func NewFakeHandoffStore() *FakeHandoffStore {
@@ -89,6 +92,9 @@ func (f *FakeHandoffStore) Get(_ context.Context, signupID string) (*domain.Hand
 func (f *FakeHandoffStore) Update(_ context.Context, h *domain.Handoff) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.UpdateErr != nil {
+		return f.UpdateErr
+	}
 	cp := *h
 	f.handoffs[h.SignupID] = &cp
 	return nil
@@ -104,6 +110,9 @@ func (f *FakeHandoffStore) Delete(_ context.Context, signupID string) error {
 func (f *FakeHandoffStore) AcquireLock(_ context.Context, signupID string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.AcquireLockErr != nil {
+		return "", false, f.AcquireLockErr
+	}
 	if _, held := f.locked[signupID]; held {
 		return "", false, nil
 	}
@@ -243,6 +252,7 @@ type FakeOrgMembership struct {
 	SlugFreeErr   error // nil = slug free; set to ErrSlugTaken to simulate taken slug
 	I1Resp        *port.ProvisionTenantResponse
 	I1Err         error
+	I1TenantID    string // when set, I-1 answers with this tenant_id instead of echoing the request
 	mu            sync.Mutex
 	I1Calls       []port.ProvisionTenantRequest
 }
@@ -275,6 +285,9 @@ func (f *FakeOrgMembership) ProvisionTenant(_ context.Context, req port.Provisio
 	f.I1Calls = append(f.I1Calls, req)
 	if f.I1Err != nil {
 		return nil, f.I1Err
+	}
+	if f.I1TenantID != "" {
+		return &port.ProvisionTenantResponse{TenantID: f.I1TenantID}, nil
 	}
 	// Echo the request tenant ID — matches O&M's idempotent behaviour.
 	return &port.ProvisionTenantResponse{TenantID: req.TenantID}, nil
