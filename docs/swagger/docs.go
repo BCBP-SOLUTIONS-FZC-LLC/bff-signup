@@ -130,7 +130,7 @@ const docTemplate = `{
                         }
                     },
                     "429": {
-                        "description": "Too many session starts from this IP",
+                        "description": "Too many session starts from this IP (Retry-After header, seconds)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -227,7 +227,7 @@ const docTemplate = `{
                         }
                     },
                     "429": {
-                        "description": "Rate limit exceeded",
+                        "description": "Rate limit exceeded (Retry-After header, seconds)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -377,7 +377,7 @@ const docTemplate = `{
                         }
                     },
                     "429": {
-                        "description": "Too many status polls",
+                        "description": "Too many status polls (Retry-After header, seconds)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }

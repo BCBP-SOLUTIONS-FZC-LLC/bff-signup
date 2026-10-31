@@ -71,7 +71,7 @@ func NewHandlers(
 // @Tags         session
 // @Produce      json
 // @Success      200  {object}  SessionResponse
-// @Failure      429  {object}  ErrorResponse  "Too many session starts from this IP"
+// @Failure      429  {object}  ErrorResponse  "Too many session starts from this IP (Retry-After header, seconds)"
 // @Failure      503  {object}  ErrorResponse  "Valkey unavailable (fail-closed)"
 // @Router       /session [get]
 func (h *Handlers) Session(c *gin.Context) {
@@ -127,7 +127,7 @@ func (h *Handlers) Session(c *gin.Context) {
 // @Failure      403  {object}  ErrorResponse        "CSRF token invalid or CAPTCHA failed"
 // @Failure      409  {object}  SlugTakenResponse    "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry"
 // @Failure      413  {object}  ErrorResponse        "Request body larger than 16 KiB"
-// @Failure      429  {object}  ErrorResponse        "Rate limit exceeded"
+// @Failure      429  {object}  ErrorResponse        "Rate limit exceeded (Retry-After header, seconds)"
 // @Failure      503  {object}  ErrorResponse        "Dependency unavailable (Valkey, Turnstile, RP-1)"
 // @Security     SessionCookie
 // @Security     CSRFToken
@@ -230,7 +230,7 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 // @Success      200  {object}  StatusResponse
 // @Failure      401  {object}  ErrorResponse  "Session expired or missing"
 // @Failure      404  {object}  ErrorResponse  "Signup not found or does not belong to this session"
-// @Failure      429  {object}  ErrorResponse  "Too many status polls"
+// @Failure      429  {object}  ErrorResponse  "Too many status polls (Retry-After header, seconds)"
 // @Security     SessionCookie
 // @Router       /{signup_id}/status [get]
 func (h *Handlers) GetStatus(c *gin.Context) {
