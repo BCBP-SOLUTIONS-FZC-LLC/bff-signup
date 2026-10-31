@@ -23,6 +23,7 @@
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.1 | 2026-10-31 | **Spec and behaviour aligned after E2E testing.** Code now follows the spec: `Retry-After` header on every `429`; eligibility and RP-1 retried once on `5xx`/timeout, RP-1 also once on `409 operation_in_progress` (§9.3, §17.2). Spec text corrected to match intended behaviour: allocated resubmit with different details keeps the session's `signup_id` and issues a new `tenant_id` (§5.4); a slug conflict is not a provisioning-failure metric (§9.5); an expired session cookie gives `401` before `404` (§5.5). |
 | 1.0 | 2026-10-28 | **Production hardening pass — Phase 1 code complete.** Security: CSRF and email HMAC now use `subtle.ConstantTimeCompare`; `X-Frame-Options: DENY` and `Referrer-Policy: strict-origin-when-cross-origin` added to all responses; `ReadHeaderTimeout: 5s` added (Slowloris); `CAPTCHA_SKIP=true` rejected outside dev/test/local by `config.Validate()`; rate limiter converted from sliding-window to fixed-window Lua script; handleResubmit acquires distributed lock before deleting StateAllocated handoff (race safety). Correctness: SB-4 now returns 409 with suggestions (was returning 202); `SuggestSlugs` capped at 50 iterations; session TTL and all four rate-limit thresholds are now configurable from env vars (were hardcoded constants); eligibility timeout wired from `ELIGIBILITY_TIMEOUT_MS`; config bounds validation added for all timeouts and `SESSION_TTL_SECONDS`; Valkey errors in SB-3/SB-4 now return 503 (were 404). Observability: `bff_signup_dependency_call_duration_seconds` was registered but never called — all four outbound adapters (orgmembership, realmprovisioner, turnstile, catalog) now call `ObserveDependencyCall` after `httpClient.Do()`; startup now emits structured `log.Info` at each init phase; all logs/metrics/traces pass through platform-gincommon (enforced by new CI lint). Deployment: `terminationGracePeriodSeconds: 35` and `topologySpreadConstraints` added; `values-prod.yaml` now self-contained; duplicate YAML keys removed. CI: `check-log-sink.sh` and `log-sink-lint` Makefile target added; `check-metric-naming.sh` enhanced with adapter-instrumentation enforcement and label-vocabulary checks; coverage gate corrected to 95%. 20+ tests added. Go 1.26.10. `prometheus/common` v0.73.0. |
 | 0.9 | 2026-10-26 | **Deferred items marked.** Four items formally deferred to future phases after cross-service gap review (BFF + O&M + RP): (1) BFF-6 on-call / PagerDuty — deferred until PagerDuty procured; (2) N-10a Keycloak existing-realm policy sweep — deferred to Keycloak phase; (3) Phase 1.5 direct-paid signup — deferred until Billing service is built; (4) SRE infra gaps (BFF-1/2/4) — deferred to infra phase. §16.1 and §16.2 updated with DEFERRED labels and reasons. §19 updated with deferred activation note. BFF code fixes applied: `x-tenant-roles: iam-system` header added to I-1 and eligibility calls; `licensed_seats` field added to `ProvisionTenantRequest`, `Handoff`, and `callI1Once`; paid signup handoff wires `LicensedSeats` from `in.Seats`. |
 | 0.8 | 2026-10-23 | **All go-live blockers cleared; backstop fully functional.** RP-1: `TrialTenantProvisionedPayload` expanded — `KeycloakUserID` renamed to `OwnerUserID`, `Slug`/`Name`/`Plan` added (`event.go:69–75`, `provisioning_service.go:403`); schema and AsyncAPI spec updated. RP-4: `validPlan()` wired into RP-1 handler (one line). O&M rev 2.33: `TrialTenantProvisioned` handler activated as backstop with three idempotency layers (processOnce dedup, tenantExists check, ON CONFLICT); `iam_org_membership_tenant_provisioning_backstop_total` metric live; `IAMSignupProvisioningRejected` alert added; docs corrected (BFF produces zero events). BFF: terms version validation tightened — `TermsVersion` now checked against `CurrentTermsVersion`; SB-1 response now includes `current_terms_version` so browser knows which version to echo back. §7 event table updated (payload now live). §9.4 backstop status updated from "pending" to "live". §18.1 and §18.2 stale "open" notes cleared. Sibling LLD versions: RP rev 1.37, O&M rev 2.33. |
@@ -364,7 +365,7 @@ Other errors: `400 validation_failed`, `401 session_expired`, `403 csrf_invalid`
 | Handoff state | Same details | Different details |
 |---|---|---|
 | none / `rejected` | New attempt | New attempt |
-| `allocated` (RP-1 not confirmed) | Retry with the **same** `tenant_id` and RP-1 key (password needed again) | **Discard** the handoff; issue a new `signup_id` and `tenant_id` (a new RP-1 key), so RP cannot replay a result made with the old email |
+| `allocated` (RP-1 not confirmed) | Retry with the **same** `tenant_id` and RP-1 key (password needed again) | **Discard** the handoff; keep the session's `signup_id` (it is bound to the session) and issue a new `tenant_id` (a new RP-1 key), so RP cannot replay a result made with the old email |
 | `identity_created` / `tenant_pending` / `slug_conflict` | Resume (password ignored, no new CAPTCHA or rate-limit hit) | `409 invalid_state` `details.reason = "details_changed"`; the UI tells the user to check the original email or start a new session |
 | `completed` | Return the original `201` | `409 invalid_state` (`details_changed`) |
 
@@ -372,7 +373,7 @@ Turnstile tokens are single-use: the frontend must fetch a fresh token before ev
 
 ### 5.5 SB-3 `GET /api/v1/signup/{signup_id}/status` and SB-4 `POST /api/v1/signup/{signup_id}/slug`
 
-Both require the session whose `signup_id` matches the path; otherwise `404 signup_not_found` (no hint whether it exists). SB-3 is limited to 60 polls per minute per session.
+Both require the session whose `signup_id` matches the path; otherwise `404 signup_not_found` (no hint whether it exists). SB-3 is limited to 60 polls per minute per session. The session cookie (30 min, sliding) and the handoff (30 min) expire together; a request with an expired cookie gets `401 session_expired` before any handoff lookup, so `404 signup_not_found` after expiry is only seen with a still-valid session.
 
 ```jsonc
 // SB-3 Response 200
@@ -721,7 +722,7 @@ No BFF-owned reconciliation job and no BFF database (SB-INV-1).
 | RP-1 `502`/`503` after retries | `503`, resubmit | `allocated` | `realm_provisioner/unavailable` |
 | RP-1 unexpected `4xx` (`400`, `403 tenant_mismatch`) | `500` | `allocated` | `realm_provisioner/contract_error` (paged) |
 | I-1 `5xx` after retries | `202` | `tenant_pending` | `org_membership/unavailable` |
-| I-1 `409 slug_already_taken` | `409 slug_taken` | `slug_conflict` | `org_membership/slug_taken` |
+| I-1 `409 slug_already_taken` | `409 slug_taken` | `slug_conflict` | none — a slug conflict is a user outcome, not a provisioning failure; it is counted in `bff_signup_form_submitted_total` only |
 | I-1 unexpected `4xx` | `500` | `identity_created` | `org_membership/contract_error` (paged) |
 | Pod dies mid-handoff | Next poll / resubmit resumes | last persisted state | `handoff/resumed` |
 
