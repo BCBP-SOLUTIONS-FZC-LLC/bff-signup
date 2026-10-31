@@ -28,8 +28,9 @@ The mocks must support `GET/DELETE /__mock/requests` (they record the headers an
   (input boundaries, downstream headers/bodies, locale, SB-2 metrics).
 - Each test name starts with the case ID from the test workbook (for example `TestSB2_47_...`).
 - `valkey_down_test.go` stops Valkey once and checks SB1-03, SB2-41, H-03, H-04 (needs `E2E_VALKEY_CONTAINER`).
-- Stay manual (cannot be automated here): real Turnstile
-  (SB2-32/33/36/42, M-07/M-08, SB2-RL01), timing (SB2-37a/b), the `identity_created` state (SB2-52a/53),
-  15-minute wait (SB3-05), unreachable (SB3-13), SB5-02 (needs `PAID_SIGNUP_ENABLED=true`),
-  SB4-08/13, O-RED05, S-03, X-01/X-02.
+- `captcha_and_paid_test.go` (SB2-32/33/36/42, SB2-RL01, M-07/M-08, SB5-02) runs only when the service is started in a
+  special mode and is skipped otherwise: `E2E_CAPTCHA_MODE=pass|fail|mismatch|down` (CAPTCHA_SKIP=false, Cloudflare's
+  dummy Turnstile secrets, internet needed) or `E2E_PAID_ENABLED=true` (PAID_SIGNUP_ENABLED=true). Modes are in the file header.
+- Stay manual (cannot be automated here): timing (SB2-37a/b), the `identity_created` state (SB2-52a/53),
+  15-minute wait (SB3-05), unreachable (SB3-13), SB4-08/13, O-RED05, S-03, X-01/X-02.
 - SB2-43/44 and SB2-RP01 check that eligibility and RP-1 are each retried once (same idempotency key), then answer 503.

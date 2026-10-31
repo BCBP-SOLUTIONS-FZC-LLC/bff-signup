@@ -6,11 +6,12 @@ package e2e_test
 //
 // Not automated here (stay manual): SB4-08 and SB4-13 (need the mock request
 // log to compare tenant_id and owner_user_id), SB5-02 (needs the service
-// restarted with PAID_SIGNUP_ENABLED=true). SB4-12 is in Stage 1.
+// restarted with PAID_SIGNUP_ENABLED=true; now in captcha_and_paid_test.go). SB4-12 is in Stage 1.
 
 import (
 	"bytes"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -167,6 +168,9 @@ func (s *session) postSlugRaw(t *testing.T, withCookie, withCSRF bool, body []by
 
 // SB5-01: PAID_SIGNUP_ENABLED=false (default) → the route answers 404.
 func TestSB5_01_PaidRouteIs404WhenDisabled(t *testing.T) {
+	if os.Getenv("E2E_PAID_ENABLED") == "true" {
+		t.Skip("the service runs with PAID_SIGNUP_ENABLED=true; see SB5-02")
+	}
 	s := newSession(t, randomIP(), nil)
 	p := s.trialPayload(map[string]any{"seats": 5, "payment_token": "tok_e2e"})
 
