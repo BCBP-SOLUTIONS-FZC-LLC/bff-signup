@@ -1,6 +1,12 @@
-package domain
+package domain_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
+)
 
 func TestNormaliseCompanyName(t *testing.T) {
 	cases := map[string]string{
@@ -10,8 +16,6 @@ func TestNormaliseCompanyName(t *testing.T) {
 		"      ":              "",
 	}
 	for in, want := range cases {
-		if got := NormaliseCompanyName(in); got != want {
-			t.Errorf("NormaliseCompanyName(%q) = %q, want %q", in, got, want)
-		}
+		assert.Equal(t, want, domain.NormaliseCompanyName(in), "input %q", in)
 	}
 }

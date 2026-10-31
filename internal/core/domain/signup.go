@@ -105,6 +105,13 @@ func NormaliseEmail(email string) string {
 	return strings.ToLower(email)
 }
 
+// NormaliseCompanyName returns the company name in the form it must be stored
+// and forwarded to RP-1 and I-1: trimmed (LLD §5.1). Validation, the handoff
+// record and the downstream calls must all see this same value.
+func NormaliseCompanyName(name string) string {
+	return strings.TrimSpace(name)
+}
+
 // ValidatePassword checks the password against the policy (LLD §10.6).
 // The plain password is compared here and then discarded; it never leaves this
 // process except as a PBKDF2 hash sent to RP-1.
