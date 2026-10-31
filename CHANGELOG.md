@@ -38,6 +38,7 @@ Spec text aligned to the intended behaviour (LLD v1.1; the code was already righ
 1. A resubmit with different details while `allocated` keeps the session's `signup_id` and issues a new `tenant_id` (SB2-51; §5.4 contradicted itself).
 2. A slug conflict is not a `provisioning_failed_total` reason, so the failure-rate alert is not triggered by a user outcome; it is counted in `form_submitted_total` only (SB2-69).
 3. After expiry SB-3 returns `401 session_expired` before any handoff lookup (SB3-13, OBS-33).
+4. Turnstile is **not** retried (LLD §9.3 said once; §5.4 says tokens are single-use). A retry after a timeout could fail on a spent token and show a false `403 captcha_failed` instead of `503`. The code already made one call; the LLD row was corrected and an E2E test (SB2-42) checks exactly one call.
 
 Known effect: during a real RP-1 or O&M outage, dependency-call metrics show about twice the failed calls because of the retry.
 
