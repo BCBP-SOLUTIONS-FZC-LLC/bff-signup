@@ -15,8 +15,14 @@ import (
 
 const (
 	maxI1InlineRetries = 2
-	resumeWindow       = 15 * time.Minute
-	maxSlugAttempts    = 5
+	// Bounded retries for the two calls that run before any user exists (LLD §9.3 table,
+	// §17.2): one retry on 502/503/timeout, and for RP-1 also on 409 "operation in
+	// progress", always with the same Idempotency-Key.
+	maxUnavailableRetries = 1
+	maxInProgressRetries  = 1
+	retryPause            = 150 * time.Millisecond
+	resumeWindow          = 15 * time.Minute
+	maxSlugAttempts       = 5
 )
 
 // OrchestratorInput carries all the data needed for the eligibility → RP-1 → I-1 handoff.
@@ -62,9 +68,7 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 
 	// ── Step E: trial eligibility (CR-4) ─────────────────────────────────────
 	if h.State == domain.StateAllocated {
-		eligCtx, eligCancel := context.WithTimeout(ctx, o.eligibilityTimeout)
-		err := o.om.CheckEligibility(eligCtx, h.AdminEmailHMAC)
-		eligCancel()
+		err := o.checkEligibility(ctx, h.AdminEmailHMAC)
 		if err != nil {
 			// Only delete when email is definitively ineligible (LLD §9.5).
 			// On ErrDependencyUnavailable keep the handoff so the user can retry.
@@ -102,7 +106,7 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 			Plan:               string(h.Plan),
 			TermsAcceptance:    in.TermsAcceptance,
 		}
-		rpResp, err := o.rp.ProvisionTrial(ctx, rpReq, idempotencyKey)
+		rpResp, err := o.provisionRP1(ctx, rpReq, idempotencyKey)
 		if err != nil {
 			// ErrEmailUnavailable → delete handoff and surface to user
 			if isDomainCause(err, domain.ErrEmailUnavailable) {
@@ -303,6 +307,62 @@ func seedJSON(seed *port.HashedPasswordSeed) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// checkEligibility calls the eligibility endpoint (each attempt has its own
+// timeout) and retries once when O&M is unavailable (LLD §17.2).
+func (o *HandoffOrchestrator) checkEligibility(ctx context.Context, emailHMAC string) error {
+	var err error
+	for attempt := 0; attempt <= maxUnavailableRetries; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, o.eligibilityTimeout)
+		err = o.om.CheckEligibility(attemptCtx, emailHMAC)
+		cancel()
+		if err == nil || !isDomainCause(err, domain.ErrDependencyUnavailable) {
+			return err
+		}
+		if attempt < maxUnavailableRetries && !pause(ctx, retryPause) {
+			return err
+		}
+	}
+	return err
+}
+
+// provisionRP1 calls RP-1 with the same idempotency key on every attempt:
+// 502/503/timeout is retried once, and so is 409 OPERATION_IN_PROGRESS.
+// When the in-progress retries run out the user sees 503 (LLD §17.2).
+func (o *HandoffOrchestrator) provisionRP1(ctx context.Context, req port.ProvisionTrialRequest, key string) (*port.ProvisionTrialResponse, error) {
+	unavailableRetries, inProgressRetries := 0, 0
+	for {
+		resp, err := o.rp.ProvisionTrial(ctx, req, key)
+		if err == nil {
+			return resp, nil
+		}
+		switch {
+		case isDomainCause(err, domain.ErrDependencyUnavailable) && unavailableRetries < maxUnavailableRetries:
+			unavailableRetries++
+		case isDomainCause(err, domain.ErrOperationInProgress) && inProgressRetries < maxInProgressRetries:
+			inProgressRetries++
+		case isDomainCause(err, domain.ErrOperationInProgress):
+			return nil, domain.NewError(domain.ErrDependencyUnavailable, "RP-1 is still processing this request")
+		default:
+			return nil, err
+		}
+		if !pause(ctx, retryPause) {
+			return nil, err
+		}
+	}
+}
+
+// pause waits d, or returns false early when ctx is done.
+func pause(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 func isDomainCause(err error, cause error) bool {

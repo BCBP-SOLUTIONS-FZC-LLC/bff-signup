@@ -181,6 +181,7 @@ func (f *FakeCaptchaVerifier) Verify(_ context.Context, _, _ string) error {
 type FakeRealmProvisioner struct {
 	Resp        *port.ProvisionTrialResponse
 	Err         error
+	ErrSeq      []error // consumed one per ProvisionTrial call before Err applies
 	DirectResp  *port.ProvisionDirectResponse
 	DirectErr   error
 	mu          sync.Mutex
@@ -214,6 +215,14 @@ func (f *FakeRealmProvisioner) ProvisionTrial(_ context.Context, req port.Provis
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, req)
+	if len(f.ErrSeq) > 0 {
+		e := f.ErrSeq[0]
+		f.ErrSeq = f.ErrSeq[1:]
+		if e != nil {
+			return nil, e
+		}
+		return f.Resp, nil
+	}
 	return f.Resp, f.Err
 }
 
@@ -228,12 +237,14 @@ func (f *FakeRealmProvisioner) ProvisionDirect(_ context.Context, req port.Provi
 
 // FakeOrgMembership controls eligibility, PUB-1 slug check, and I-1 outcomes independently.
 type FakeOrgMembership struct {
-	EligibleErr error // nil = eligible; set to ErrTrialNotEligible to block
-	SlugFreeErr error // nil = slug free; set to ErrSlugTaken to simulate taken slug
-	I1Resp      *port.ProvisionTenantResponse
-	I1Err       error
-	mu          sync.Mutex
-	I1Calls     []port.ProvisionTenantRequest
+	EligibleErr   error   // nil = eligible; set to ErrTrialNotEligible to block
+	EligibleSeq   []error // consumed one per CheckEligibility call before EligibleErr applies
+	EligibleCalls int
+	SlugFreeErr   error // nil = slug free; set to ErrSlugTaken to simulate taken slug
+	I1Resp        *port.ProvisionTenantResponse
+	I1Err         error
+	mu            sync.Mutex
+	I1Calls       []port.ProvisionTenantRequest
 }
 
 func NewFakeOrgMembership(tenantID string) *FakeOrgMembership {
@@ -243,6 +254,14 @@ func NewFakeOrgMembership(tenantID string) *FakeOrgMembership {
 }
 
 func (f *FakeOrgMembership) CheckEligibility(_ context.Context, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.EligibleCalls++
+	if len(f.EligibleSeq) > 0 {
+		e := f.EligibleSeq[0]
+		f.EligibleSeq = f.EligibleSeq[1:]
+		return e
+	}
 	return f.EligibleErr
 }
 
