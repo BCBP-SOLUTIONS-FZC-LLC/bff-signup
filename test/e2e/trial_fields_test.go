@@ -142,6 +142,7 @@ func TestSB2_34_FourthSignupFromSameIPIs429(t *testing.T) {
 
 	assert.Equal(t, http.StatusTooManyRequests, r.status, r.text())
 	assert.Contains(t, r.text(), "RATE_LIMITED")
+	assert.Positive(t, retryAfterSeconds(t, r), "429 must carry a Retry-After header")
 }
 
 // SB2-35: the 6th attempt with one e-mail within 24 h is refused (limit 5/day).

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -129,6 +130,7 @@ func TestSB1_02_TwentyFirstSessionFromSameIPIs429(t *testing.T) {
 
 	assert.Equal(t, http.StatusTooManyRequests, r.status, r.text())
 	assert.Contains(t, r.text(), "RATE_LIMITED")
+	assert.Positive(t, retryAfterSeconds(t, r), "429 must carry a Retry-After header")
 }
 
 func TestSB1_04_ResponseHeaders(t *testing.T) {
@@ -271,4 +273,11 @@ func TestSB2_09_OneCharCompanyNameIs400(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
 	assert.Contains(t, r.text(), "company_name")
+}
+
+// retryAfterSeconds reads the Retry-After header of a reply (0 when missing).
+func retryAfterSeconds(t *testing.T, r reply) int {
+	t.Helper()
+	n, _ := strconv.Atoi(r.header.Get("Retry-After"))
+	return n
 }

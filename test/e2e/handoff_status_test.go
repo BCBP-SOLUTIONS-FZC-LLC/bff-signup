@@ -56,26 +56,24 @@ func TestSB2_70_FullHappyPath(t *testing.T) {
 	assert.Contains(t, r.text(), "check_email")
 }
 
-func TestSB2_43_EligibilityDownIs503(t *testing.T) {
+func TestSB2_43_EligibilityDownIs503AndRetriedOnce(t *testing.T) {
 	s := newSession(t, randomIP(), nil)
 	pin(t, omURL, "eligibility", "unavailable", 5)
 
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
-	// KNOWN GAP (found by this test): the case says "retry once" but the service
-	// makes a single eligibility call. Call count is therefore not asserted.
+	assert.Equal(t, 3, pinTTL(t, omURL, "eligibility"), "1 call + 1 retry = 2 calls used")
 }
 
-func TestSB2_44_RP1DownIs503(t *testing.T) {
+func TestSB2_44_RP1DownIs503AndRetriedOnce(t *testing.T) {
 	s := newSession(t, randomIP(), nil)
 	pin(t, rpURL, "rp1", "unavailable", 5)
 
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
-	// KNOWN GAP (found by this test): LLD §17.2 says RP-1 502/503 is retried once,
-	// but the service makes a single RP-1 call. Call count is therefore not asserted.
+	assert.Equal(t, 3, pinTTL(t, rpURL, "rp1"), "1 call + 1 retry = 2 calls used")
 }
 
 func TestSB2_45_RP1UnexpectedClientErrorIs500(t *testing.T) {

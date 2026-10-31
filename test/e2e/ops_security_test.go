@@ -248,13 +248,13 @@ func TestO_LogsHaveIDsAndNoSecrets(t *testing.T) {
 
 	// O-RED01..04 / O-02: no secrets and no full e-mail in the log.
 	for name, secret := range map[string]string{
-		"plain password":   p["password"].(string),
-		"admin name":       p["admin_name"].(string),
-		"captcha token":    p["captcha_token"].(string),
-		"CSRF token":       s.csrf,
-		"session cookie":   s.sid,
-		"full e-mail":      p["admin_email"].(string),
-		"hashed seed key":  "hashed_password_seed",
+		"plain password":  p["password"].(string),
+		"admin name":      p["admin_name"].(string),
+		"captcha token":   p["captcha_token"].(string),
+		"CSRF token":      s.csrf,
+		"session cookie":  s.sid,
+		"full e-mail":     p["admin_email"].(string),
+		"hashed seed key": "hashed_password_seed",
 	} {
 		assert.NotContains(t, log, secret, name)
 	}

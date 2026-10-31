@@ -75,6 +75,7 @@ type reply struct {
 	status  int
 	body    []byte
 	cookies []*http.Cookie
+	header  http.Header
 	took    time.Duration
 }
 
@@ -115,7 +116,7 @@ func send(req *http.Request) (reply, error) {
 	if err != nil {
 		return reply{}, err
 	}
-	return reply{status: resp.StatusCode, body: b, cookies: resp.Cookies(), took: time.Since(start)}, nil
+	return reply{status: resp.StatusCode, body: b, cookies: resp.Cookies(), header: resp.Header, took: time.Since(start)}, nil
 }
 
 func mustJSON(t *testing.T, v any) []byte {

@@ -31,6 +31,5 @@ The mocks must support `GET/DELETE /__mock/requests` (they record the headers an
 - Stay manual (cannot be automated here): real Turnstile
   (SB2-32/33/36/42, M-07/M-08, SB2-RL01), timing (SB2-37a/b), the `identity_created` state (SB2-52a/53),
   15-minute wait (SB3-05), unreachable (SB3-13), SB5-02 (needs `PAID_SIGNUP_ENABLED=true`),
-  SB4-08/13, SB2-RP01 (OBS-41), O-RED05, S-03, X-01/X-02.
-- Known gap documented in `handoff_status_test.go` (SB2-43/44): the service does not retry RP-1 or
-  eligibility once on 502/503 as LLD §17.2 says (OBS-55).
+  SB4-08/13, O-RED05, S-03, X-01/X-02.
+- SB2-43/44 and SB2-RP01 check that eligibility and RP-1 are each retried once (same idempotency key), then answer 503.

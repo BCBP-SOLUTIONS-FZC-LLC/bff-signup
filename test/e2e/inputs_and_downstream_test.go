@@ -11,7 +11,7 @@ package e2e_test
 // the endpoint is missing these tests stop with a clear message.
 //
 // Covered by an earlier test (no new test): SB2-H05 = TestS04, SB2-H07 = TestSB3_07,
-// SB2-RL02/RL03 = TestSB2_34. Stay manual: SB2-RL01 (Turnstile), SB2-RP01 (OBS-41).
+// SB2-RL02/RL03 = TestSB2_34. Stay manual: SB2-RL01 (Turnstile).
 
 import (
 	"encoding/base64"
@@ -446,4 +446,19 @@ func TestSB2_67_68_69_SubmitMetrics(t *testing.T) {
 
 	assert.Equal(t, submitted1+1, m("bff_signup_form_submitted_total", `mode="trial"`))
 	assert.Equal(t, failed0, m("bff_signup_provisioning_failed_total", ""), "SB2-69")
+}
+
+// SB2-RP01: RP-1 says "operation in progress" once; the service retries with the
+// same Idempotency-Key and the signup completes.
+func TestSB2_RP01_OperationInProgressIsRetriedWithSameKey(t *testing.T) {
+	clearRecorded(t)
+	s := newSession(t, randomIP(), nil)
+	pin(t, rpURL, "rp1", "operation_in_progress", 1)
+
+	r := s.postTrial(t, s.trialPayload(nil))
+
+	assert.Equal(t, http.StatusCreated, r.status, r.text())
+	calls := recorded(t, rpURL, "RP-1")
+	require.Len(t, calls, 2)
+	assert.Equal(t, calls[0].Headers["idempotency-key"], calls[1].Headers["idempotency-key"])
 }
