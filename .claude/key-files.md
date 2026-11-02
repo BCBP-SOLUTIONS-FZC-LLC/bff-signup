@@ -24,13 +24,13 @@ Per-file notes on non-obvious behaviour, wiring decisions, and invariants.
 
 - **`internal/core/service/status_service.go`** — SB-3 (poll status) and SB-4 (change slug). SB-3 acquires the distributed lock before attempting I-1 resume so concurrent polls don't race. Both SB-3 and SB-4 check that `sessionSignupID == pathSignupID` before any Valkey access — if they don't match, return `404 signup_not_found` with no hint (LLD §5.5).
 
-- **`internal/adapter/inbound/http/router.go`** — single source of truth for routes. `requireValidatedSession` middleware does session + CSRF validation for POSTs, session-only for GETs. `noStoreHeaders()` sets `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` on every response. POST routes require `ValidateOrigin` before session validation.
+- **`internal/adapter/inbound/http/router.go`** — single source of truth for routes. `requireValidatedSession` middleware does session + CSRF validation for POSTs, session-only for GETs. `middleware.RequireJSON` rejects POSTs without `Content-Type: application/json` (400); `strict_json.go` rejects unknown JSON fields; bodies over 16 KiB return 413. `noStoreHeaders()` sets `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` on every response. POST routes require `ValidateOrigin` before session validation.
 
 - **`internal/adapter/inbound/http/handlers.go`** — all 4 endpoint handlers. `acceptLocale` derives `default_locale` from `Accept-Language` (allow-listed). Slug taken (409) has a custom response shape with `suggestions[]`; all other errors go through `handleError`.
 
-- **`internal/adapter/inbound/http/middleware/session.go`** — `SetSessionCookie` manually appends `; SameSite=Strict` because gin defaults to `SameSite=Lax`. Cookie path is `/api/v1/signup`.
+- **`internal/adapter/inbound/http/middleware/session.go`** — `SetSessionCookie` calls `c.SetSameSite(http.SameSiteStrictMode)` before `c.SetCookie` because gin defaults to `SameSite=Lax`. The cookie is re-issued on SB-2 and SB-3 so the session TTL slides. Cookie path is `/api/v1/signup`.
 
-- **`internal/adapter/inbound/http/middleware/clientip.go`** — reads `x-envoy-external-address` set by Envoy (never parses `X-Forwarded-For` directly, LLD §10.2 N-8). Falls back to `c.ClientIP()` in local dev.
+- **`internal/adapter/inbound/http/middleware/clientip.go`** — reads `x-envoy-external-address` set by Envoy (never parses `X-Forwarded-For` directly, LLD §10.2 N-8). Falls back to `c.ClientIP()` in local dev; `newEngine()` (`engine.go`) disables gin trusted proxies so forged `X-Forwarded-For` is ignored.
 
 - **`internal/adapter/outbound/valkey/handoff_store.go`** — `AcquireLock` uses `SET NX PX 15000`. `ReleaseLock` uses a Lua script to atomically delete only if the token matches (prevents a slow request from releasing another request's lock). `Update` uses `completedTTL=10min` when state is `completed`, otherwise `handoffTTL=30min`.
 

@@ -15,8 +15,14 @@ import (
 
 const (
 	maxI1InlineRetries = 2
-	resumeWindow       = 15 * time.Minute
-	maxSlugAttempts    = 5
+	// Bounded retries for the two calls that run before any user exists (LLD §9.3 table,
+	// §17.2): one retry on 502/503/timeout, and for RP-1 also on 409 "operation in
+	// progress", always with the same Idempotency-Key.
+	maxUnavailableRetries = 1
+	maxInProgressRetries  = 1
+	retryPause            = 150 * time.Millisecond
+	resumeWindow          = 15 * time.Minute
+	maxSlugAttempts       = 5
 )
 
 // OrchestratorInput carries all the data needed for the eligibility → RP-1 → I-1 handoff.
@@ -24,7 +30,7 @@ type OrchestratorInput struct {
 	Handoff            *domain.Handoff
 	AdminEmail         string
 	AdminName          string
-	HashedPasswordSeed string               // JSON-serialised; zeroed after RP-1 call
+	HashedPasswordSeed string               // JSON-serialised; Go string, not zeroable — never logged, stored in Valkey, or retained after RP-1 (SB-INV-2)
 	TermsAcceptance    port.TermsAcceptance // forwarded to RP-1 for Audit Log record (A-4)
 }
 
@@ -62,9 +68,7 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 
 	// ── Step E: trial eligibility (CR-4) ─────────────────────────────────────
 	if h.State == domain.StateAllocated {
-		eligCtx, eligCancel := context.WithTimeout(ctx, o.eligibilityTimeout)
-		err := o.om.CheckEligibility(eligCtx, h.AdminEmailHMAC)
-		eligCancel()
+		err := o.checkEligibility(ctx, h.AdminEmailHMAC)
 		if err != nil {
 			// Only delete when email is definitively ineligible (LLD §9.5).
 			// On ErrDependencyUnavailable keep the handoff so the user can retry.
@@ -102,7 +106,7 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 			Plan:               string(h.Plan),
 			TermsAcceptance:    in.TermsAcceptance,
 		}
-		rpResp, err := o.rp.ProvisionTrial(ctx, rpReq, idempotencyKey)
+		rpResp, err := o.provisionRP1(ctx, rpReq, idempotencyKey)
 		if err != nil {
 			// ErrEmailUnavailable → delete handoff and surface to user
 			if isDomainCause(err, domain.ErrEmailUnavailable) {
@@ -173,7 +177,32 @@ func (o *HandoffOrchestrator) ChangeSlug(ctx context.Context, h *domain.Handoff,
 	if err := o.handoffs.Update(ctx, h); err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
 	}
-	return o.callI1Once(ctx, h)
+	result, err := o.callI1Once(ctx, h)
+	if err == nil {
+		return result, nil
+	}
+	if isDomainCause(err, domain.ErrSlugTaken) {
+		// New slug is also taken: surface the suggestions and a 409 (A-3).
+		return result, err
+	}
+	if isDomainCause(err, domain.ErrInternal) {
+		// Contract error (LLD §9.5): fail fast, exactly as runI1 does.
+		metrics.IncProvisioningFailed("trial", "org_membership", "contract_error") // LLD §11.2
+		return nil, err
+	}
+	if !isDomainCause(err, domain.ErrDependencyUnavailable) {
+		// Unknown error: pass it through unchanged, as before.
+		return nil, err
+	}
+	// I-1 5xx or timeout (LLD §9.5): the signup must not be left stuck in
+	// identity_created. Park it in tenant_pending so SB-3 polling resumes I-1,
+	// and answer 202 provisioning (OBS-31).
+	h.State = domain.StateTenantPending
+	h.I1Attempts++
+	h.LastError = err.Error()
+	h.UpdatedAt = o.clock.Now()
+	_ = o.handoffs.Update(ctx, h)
+	return &OrchestratorResult{State: domain.StateTenantPending}, nil
 }
 
 // runI1 calls I-1 inline with up to maxI1InlineRetries retries.
@@ -193,6 +222,15 @@ func (o *HandoffOrchestrator) runI1(ctx context.Context, h *domain.Handoff) (*Or
 			// result (with suggestions) and the error so the caller can surface
 			// a 409 with the suggestions list.
 			return result, err
+		}
+		if isDomainCause(err, domain.ErrInternal) {
+			// Contract error (LLD §9.5): an unexpected 4xx, an unexpected 409 code
+			// or a malformed reply from I-1 will not fix itself, and retrying would
+			// hide it behind a 202. Fail fast: the handoff stays identity_created,
+			// the caller returns 500 internal_error, and the paged contract_error
+			// metric fires. 5xx and timeouts (ErrDependencyUnavailable) still retry.
+			metrics.IncProvisioningFailed("trial", "org_membership", "contract_error") // LLD §11.2
+			return nil, err
 		}
 		lastErr = err
 		if attempt < maxI1InlineRetries {
@@ -269,6 +307,65 @@ func seedJSON(seed *port.HashedPasswordSeed) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// checkEligibility calls the eligibility endpoint (each attempt has its own
+// timeout) and retries once when O&M is unavailable (LLD §17.2).
+func (o *HandoffOrchestrator) checkEligibility(ctx context.Context, emailHMAC string) error {
+	var err error
+	for attempt := 0; attempt <= maxUnavailableRetries; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, o.eligibilityTimeout)
+		err = o.om.CheckEligibility(attemptCtx, emailHMAC)
+		cancel()
+		if err == nil || !isDomainCause(err, domain.ErrDependencyUnavailable) {
+			return err
+		}
+		if attempt < maxUnavailableRetries && !pause(ctx, retryPause) {
+			return err
+		}
+	}
+	return err
+}
+
+// provisionRP1 calls RP-1 with the same idempotency key on every attempt:
+// 502/503/timeout is retried once, and so is 409 OPERATION_IN_PROGRESS.
+// When the in-progress retries run out the user sees 503 (LLD §17.2).
+func (o *HandoffOrchestrator) provisionRP1(ctx context.Context, req port.ProvisionTrialRequest, key string) (*port.ProvisionTrialResponse, error) {
+	unavailableRetries, inProgressRetries := 0, 0
+	for {
+		resp, err := o.rp.ProvisionTrial(ctx, req, key)
+		if err == nil {
+			return resp, nil
+		}
+		switch {
+		case isDomainCause(err, domain.ErrDependencyUnavailable) && unavailableRetries < maxUnavailableRetries:
+			unavailableRetries++
+		case isDomainCause(err, domain.ErrOperationInProgress) && inProgressRetries < maxInProgressRetries:
+			inProgressRetries++
+		case isDomainCause(err, domain.ErrOperationInProgress):
+			return nil, domain.NewError(domain.ErrDependencyUnavailable, "RP-1 is still processing this request")
+		default:
+			return nil, err
+		}
+		if !pause(ctx, retryPause) {
+			// The request context ended while waiting to retry. err may still be
+			// ErrOperationInProgress, which has no HTTP mapping and must never
+			// reach the user, so report RP-1 as unavailable (503) instead.
+			return nil, domain.NewError(domain.ErrDependencyUnavailable, "request ended while waiting to retry RP-1")
+		}
+	}
+}
+
+// pause waits d, or returns false early when ctx is done.
+func pause(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 func isDomainCause(err error, cause error) bool {

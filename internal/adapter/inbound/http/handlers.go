@@ -71,7 +71,7 @@ func NewHandlers(
 // @Tags         session
 // @Produce      json
 // @Success      200  {object}  SessionResponse
-// @Failure      429  {object}  ErrorResponse  "Too many session starts from this IP"
+// @Failure      429  {object}  ErrorResponse  "Too many session starts from this IP (Retry-After header, seconds)"
 // @Failure      503  {object}  ErrorResponse  "Valkey unavailable (fail-closed)"
 // @Router       /session [get]
 func (h *Handlers) Session(c *gin.Context) {
@@ -122,11 +122,12 @@ func (h *Handlers) Session(c *gin.Context) {
 // @Param        body          body      TrialSignupRequest  true  "Signup form payload"
 // @Success      201  {object}  TrialSignupResponse  "Signup fully provisioned"
 // @Success      202  {object}  TrialSignupResponse  "Keycloak user created; tenant still provisioning — poll SB-3"
-// @Failure      400  {object}  ErrorResponse        "Validation failed"
+// @Failure      400  {object}  ErrorResponse        "Validation failed (includes wrong Content-Type, unknown JSON fields)"
 // @Failure      401  {object}  ErrorResponse        "Session expired or missing"
 // @Failure      403  {object}  ErrorResponse        "CSRF token invalid or CAPTCHA failed"
-// @Failure      409  {object}  SlugTakenResponse    "Slug already taken — submit SB-4 with a new slug"
-// @Failure      429  {object}  ErrorResponse        "Rate limit exceeded"
+// @Failure      409  {object}  SlugTakenResponse    "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry"
+// @Failure      413  {object}  ErrorResponse        "Request body larger than 16 KiB"
+// @Failure      429  {object}  ErrorResponse        "Rate limit exceeded (Retry-After header, seconds)"
 // @Failure      503  {object}  ErrorResponse        "Dependency unavailable (Valkey, Turnstile, RP-1)"
 // @Security     SessionCookie
 // @Security     CSRFToken
@@ -181,16 +182,17 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 			gincommon.AbortWithProblem(c, domainErrorToProblem(de).WithExtensions(ext))
 			return
 		}
+		h.log.Warn("signup.trial.failed", signupLogFields(c, "submit", "failed", sess.SignupID, "", ""))
 		HandleError(c, err)
 		return
 	}
 
+	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL.
+	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.sessionTTLSecs)
+
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
-		h.log.Info("signup.trial.submitted", map[string]interface{}{
-			"signup_id": result.SignupID,
-			"state":     string(result.State),
-		})
+		h.log.Info("signup.trial.submitted", signupLogFields(c, "submit", "success", result.SignupID, result.TenantID, string(result.State)))
 		c.JSON(http.StatusCreated, TrialSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
@@ -228,7 +230,7 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 // @Success      200  {object}  StatusResponse
 // @Failure      401  {object}  ErrorResponse  "Session expired or missing"
 // @Failure      404  {object}  ErrorResponse  "Signup not found or does not belong to this session"
-// @Failure      429  {object}  ErrorResponse  "Too many status polls"
+// @Failure      429  {object}  ErrorResponse  "Too many status polls (Retry-After header, seconds)"
 // @Security     SessionCookie
 // @Router       /{signup_id}/status [get]
 func (h *Handlers) GetStatus(c *gin.Context) {
@@ -245,6 +247,9 @@ func (h *Handlers) GetStatus(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+
+	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL.
+	middleware.SetSessionCookie(c, sid, h.sessionTTLSecs)
 
 	h.log.Debug("signup.status.polled", map[string]interface{}{
 		"signup_id": result.SignupID,
@@ -321,10 +326,7 @@ func (h *Handlers) ChangeSlug(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
-		h.log.Info("signup.slug.changed", map[string]interface{}{
-			"signup_id": result.SignupID,
-			"state":     string(result.State),
-		})
+		h.log.Info("signup.slug.changed", signupLogFields(c, "slug_change", "success", result.SignupID, "", string(result.State)))
 		c.JSON(http.StatusCreated, TrialSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",
@@ -471,10 +473,7 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
-		h.log.Info("signup.paid.submitted", map[string]interface{}{
-			"signup_id": result.SignupID,
-			"state":     string(result.State),
-		})
+		h.log.Info("signup.paid.submitted", signupLogFields(c, "submit", "success", result.SignupID, "", string(result.State)))
 		c.JSON(http.StatusCreated, PaidSignupResponse{
 			SignupID:              result.SignupID,
 			Status:                "completed",

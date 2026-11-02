@@ -107,7 +107,7 @@ func TestRP_ProvisionTrial_OperationInProgress(t *testing.T) {
 	require.Error(t, err)
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, domain.ErrInvalidState, de.Cause)
+	assert.Equal(t, domain.ErrOperationInProgress, de.Cause)
 }
 
 func TestRP_ProvisionTrial_BadRequest(t *testing.T) {

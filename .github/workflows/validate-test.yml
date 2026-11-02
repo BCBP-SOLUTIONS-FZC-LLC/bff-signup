@@ -26,7 +26,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     outputs:
       pct: ${{ steps.gate.outputs.pct }}
 
@@ -80,7 +80,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: 'true'
         run: make test-ci
 
-      - name: Coverage threshold gate (>= 95%)
+      - name: Coverage threshold gate (>= 97%)
         id: gate
         run: bash .github/scripts/coverage-gate.sh
 
@@ -92,6 +92,15 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
           retention-days: 30
+
+      # End-to-end tests: real HTTP requests to the real router (httptest server)
+      # with a Valkey testcontainer and in-process O&M / RP-1 mocks. Same shape as
+      # iam-org-membership. Own step (not in make test-ci) so the race + coverage
+      # run above stays fast; no -race or coverage here, like `make test-e2e`.
+      - name: Tests — e2e (real HTTP router)
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: make test-e2e
 
       - name: Cache go-arch-lint binary
         uses: actions/cache@v6.1.0

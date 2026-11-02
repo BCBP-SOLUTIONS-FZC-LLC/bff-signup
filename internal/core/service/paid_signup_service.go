@@ -93,6 +93,7 @@ func NewPaidSignupService(
 
 // Submit processes a direct paid signup request (SB-5, LLD §19).
 func (s *PaidSignupService) Submit(ctx context.Context, in PaidSignupInput) (*PaidSignupResult, error) {
+	in.CompanyName = domain.NormaliseCompanyName(in.CompanyName)
 	// ── 1. CAPTCHA (SB-INV-5) ────────────────────────────────────────────────
 	if err := s.captcha.Verify(ctx, in.CaptchaToken, in.ClientIP); err != nil {
 		return nil, err

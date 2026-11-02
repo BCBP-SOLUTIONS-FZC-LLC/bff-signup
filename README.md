@@ -283,7 +283,7 @@ The service **panics at startup** if any required env var is missing or invalid 
 |---|---|---|
 | Unit (no external deps) | `make test-unit` | No |
 | Integration (real Valkey) | `make test-integration` | Yes |
-| Contract (RP-1, I-1 shapes) | `make test-contract` | No |
+| Contract (RP-1, I-1 shapes) | `make test-unit` (`test/unit/service/contract_test.go`) | No |
 | All + race detector + coverage | `make test-ci` | Yes |
 | Load (k6) | `make test-load` | No |
 

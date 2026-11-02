@@ -99,3 +99,15 @@ func TestPBKDF2Hasher_DifferentSaltsPerCall(t *testing.T) {
 	assert.NotEqual(t, s1.Salt, s2.Salt)
 	assert.NotEqual(t, s1.Hash, s2.Hash)
 }
+
+// S-05 / OBS-49: zeroing the []byte password copy (deferred) must not corrupt the seed.
+func TestPBKDF2Hasher_ReturnsValidSeedAfterZeroing(t *testing.T) {
+	h := hasher.New(210000)
+	seed, err := h.Hash("ZeroMe@Password99")
+	require.NoError(t, err)
+	require.NotNil(t, seed)
+	hashBytes, _ := base64.StdEncoding.DecodeString(seed.Hash)
+	assert.Len(t, hashBytes, 64, "hash must be 64 bytes after defer zeroing runs")
+	saltBytes, _ := base64.StdEncoding.DecodeString(seed.Salt)
+	assert.Len(t, saltBytes, 16)
+}

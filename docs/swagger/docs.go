@@ -21,6 +21,97 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/paid": {
+            "post": {
+                "security": [
+                    {
+                        "SessionCookie": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Authorises and charges the Stripe payment token, then provisions\na dedicated realm (RP-2) and tenant row (I-1) in one request.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "signup"
+                ],
+                "summary": "Submit direct paid signup (SB-5)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "CSRF token from SB-1",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Paid signup payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.PaidSignupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Signup fully provisioned",
+                        "schema": {
+                            "$ref": "#/definitions/http.PaidSignupResponse"
+                        }
+                    },
+                    "202": {
+                        "description": "Identity created; tenant still provisioning — poll SB-3",
+                        "schema": {
+                            "$ref": "#/definitions/http.PaidSignupResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Session expired or missing",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "CSRF token invalid or CAPTCHA failed",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Slug already taken — submit SB-4 with a new slug",
+                        "schema": {
+                            "$ref": "#/definitions/http.SlugTakenResponse"
+                        }
+                    },
+                    "429": {
+                        "description": "Rate limit exceeded",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Dependency unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/session": {
             "get": {
                 "description": "Creates an ` + "`" + `sbff_sid` + "`" + ` session cookie (30-min sliding TTL) and returns a CSRF token.\nRate-limited to 20 session starts per IP per hour.",
@@ -39,7 +130,7 @@ const docTemplate = `{
                         }
                     },
                     "429": {
-                        "description": "Too many session starts from this IP",
+                        "description": "Too many session starts from this IP (Retry-After header, seconds)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -106,7 +197,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Validation failed",
+                        "description": "Validation failed (includes wrong Content-Type, unknown JSON fields)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -124,13 +215,19 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Slug already taken — submit SB-4 with a new slug",
+                        "description": "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry",
                         "schema": {
                             "$ref": "#/definitions/http.SlugTakenResponse"
                         }
                     },
+                    "413": {
+                        "description": "Request body larger than 16 KiB",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
                     "429": {
-                        "description": "Rate limit exceeded",
+                        "description": "Rate limit exceeded (Retry-After header, seconds)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -280,7 +377,7 @@ const docTemplate = `{
                         }
                     },
                     "429": {
-                        "description": "Too many status polls",
+                        "description": "Too many status polls (Retry-After header, seconds)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -362,20 +459,92 @@ const docTemplate = `{
         "http.ErrorResponse": {
             "type": "object",
             "properties": {
-                "details": {
-                    "type": "object",
-                    "additionalProperties": {}
-                },
-                "error": {
+                "detail": {
                     "type": "string"
                 },
-                "request_id": {
+                "errorCode": {
                     "type": "string"
+                },
+                "retry_after_ms": {
+                    "type": "integer"
                 },
                 "status": {
                     "type": "integer"
                 },
-                "trace_id": {
+                "title": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.PaidSignupRequest": {
+            "type": "object",
+            "required": [
+                "admin_email",
+                "admin_name",
+                "captcha_token",
+                "company_name",
+                "password",
+                "payment_token",
+                "plan",
+                "seats",
+                "terms_version"
+            ],
+            "properties": {
+                "accept_terms": {
+                    "type": "boolean"
+                },
+                "admin_email": {
+                    "type": "string"
+                },
+                "admin_name": {
+                    "type": "string"
+                },
+                "captcha_token": {
+                    "type": "string"
+                },
+                "company_name": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "payment_token": {
+                    "description": "Stripe token from browser",
+                    "type": "string"
+                },
+                "plan": {
+                    "$ref": "#/definitions/domain.Plan"
+                },
+                "seats": {
+                    "type": "integer"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "terms_version": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.PaidSignupResponse": {
+            "type": "object",
+            "properties": {
+                "email_verification_sent": {
+                    "type": "boolean"
+                },
+                "next": {
+                    "type": "string"
+                },
+                "poll_after_ms": {
+                    "type": "integer"
+                },
+                "signup_id": {
+                    "type": "string"
+                },
+                "status": {
                     "type": "string"
                 }
             }
@@ -387,6 +556,10 @@ const docTemplate = `{
                     "$ref": "#/definitions/http.CaptchaInfo"
                 },
                 "csrf_token": {
+                    "type": "string"
+                },
+                "current_terms_version": {
+                    "description": "browser must echo this back in SB-2",
                     "type": "string"
                 },
                 "password_policy": {
@@ -420,28 +593,17 @@ const docTemplate = `{
         "http.SlugTakenResponse": {
             "type": "object",
             "properties": {
-                "details": {
-                    "type": "object",
-                    "properties": {
-                        "signup_id": {
-                            "type": "string"
-                        },
-                        "suggestions": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        }
+                "message": {
+                    "type": "string"
+                },
+                "signup_id": {
+                    "type": "string"
+                },
+                "suggestions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
                     }
-                },
-                "error": {
-                    "type": "string"
-                },
-                "request_id": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
                 }
             }
         },

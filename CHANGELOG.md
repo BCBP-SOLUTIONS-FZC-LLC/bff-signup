@@ -8,6 +8,63 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — E2E suite runs in CI (2026-11-02)
+
+Review item from Sharmila on PR #2: the E2E suite was not part of CI because it needed a running service, Valkey and mocks started by hand.
+
+- `test/e2e/harness_test.go` starts everything in the test process: a Valkey testcontainer, the real router and services behind `httptest`, and Go versions of the O&M and RP-1 mocks (`mocks_test.go`), as in `iam-org-membership`.
+- `make test-e2e` now needs only Docker. Setting `E2E_BASE_URL` still runs the suite against a service started by hand.
+- New `Tests — e2e` step in `validate-test.yml` (job timeout 15 → 20 minutes). Captcha-mode, paid-mode, log-file and Valkey-down tests stay skipped in CI.
+- New test dependency: `testcontainers-go`.
+
+### Fixed — Test-gap fixes from manual API testing (2026-10-30)
+
+Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), each fixed in its own commit.
+
+- **SB2-07** — unknown or duplicate JSON fields in the request body are now rejected (`strict_json.go`).
+- **SB2-H10** — company name is normalised before validation (`NormaliseCompanyName` in `domain/signup.go`); a body of exactly 16 KiB is accepted, larger returns 413.
+- **SB2-H11 / SB2-H12** — POST requests without `Content-Type: application/json` return 400 (`middleware/content_type.go`).
+- **SB2-48** — I-1 contract errors fail fast instead of retrying (orchestrator `runI1`).
+- **SB2-56 / I-03** — a concurrent double submit of the same signup returns 409 with `retry_after_ms` instead of racing (`handleResubmit` lock).
+- **SB2-I01** — resume probe runs before CAPTCHA and rate limits, so a resume is not blocked by them.
+- **SB3-14** — Valkey error on status lookup returns 503, not 404.
+- **SB4-12** — slug change maps only dependency-unavailable to `tenant_pending`.
+- **S-04** — gin trusted proxies disabled; forged `X-Forwarded-For` no longer bypasses per-IP rate limits (`engine.go`).
+- **SB2-66** — structured logs for submit, slug change and paid submit carry request_id, trace_id, signup_id, tenant_id and state.
+- **I-02** — session TTL and cookie Max-Age slide on SB-3 and SB-2.
+- **S-05** — password bytes are zeroed after PBKDF2.
+- **O-03** — spans carry `signup.id`, `tenant.id` and `handoff.state` (direct OpenTelemetry import, as instructed by the service owner).
+
+### Fixed — Review finding on the RP-1 retry wait (2026-11-02)
+
+- **RP-1 retry wait** (`handoff_orchestrator.go`, `provisionRP1`) — when the request context ended while waiting to retry a 409 `OPERATION_IN_PROGRESS`, the internal `ErrOperationInProgress` was returned as it was and the user got a 500. It now returns `ErrDependencyUnavailable` (503), like every other RP-1 failure. Two unit tests cover a cancelled context and a deadline that expires during the wait.
+
+### Fixed — Spec gaps rectified after E2E testing (2026-10-31)
+
+Code now follows the LLD (SB1-02, SB2-34, SB2-RP01, SB2-43, SB2-44, OBS-41, OBS-51, OBS-55):
+
+- **`Retry-After` header on every 429** (`errors.go`), copied from `details.retry_after_seconds`; the body field stays.
+- **Bounded retries before any user exists** (`handoff_orchestrator.go`, LLD §9.3 / §17.2): eligibility is retried once on 5xx or timeout; RP-1 is retried once on 502/503/timeout and once on 409 `OPERATION_IN_PROGRESS`, always with the same Idempotency-Key; the user then sees 503. New domain error `ErrOperationInProgress` (RP-1 client) keeps this separate from other 409s.
+
+Spec text aligned to the intended behaviour (LLD v1.1; the code was already right) — **decisions for the reviewer**:
+
+1. A resubmit with different details while `allocated` keeps the session's `signup_id` and issues a new `tenant_id` (SB2-51; §5.4 contradicted itself).
+2. A slug conflict is not a `provisioning_failed_total` reason, so the failure-rate alert is not triggered by a user outcome; it is counted in `form_submitted_total` only (SB2-69).
+3. After expiry SB-3 returns `401 session_expired` before any handoff lookup (SB3-13, OBS-33).
+4. Turnstile is **not** retried (LLD §9.3 said once; §5.4 says tokens are single-use). A retry after a timeout could fail on a spent token and show a false `403 captcha_failed` instead of `503`. The code already made one call; the LLD row was corrected and an E2E test (SB2-42) checks exactly one call.
+
+Known effect: during a real RP-1 or O&M outage, dependency-call metrics show about twice the failed calls because of the retry.
+
+### Added
+
+- End-to-end tests (`test/e2e`, build tag `e2e`, `make test-e2e`): 170 of the 194 test cases (the fixed gaps and most manually tested cases) (session, validation, handoff, resubmit, status, slug change, health, metrics, logs, downstream headers). See `test/e2e/README.md` for what stays manual.
+- Swagger: SB-2 now documents 413 and the in-progress 409.
+
+### Known / accepted
+
+- `govulncheck` reports GO-2026-5932; not reachable (only `pbkdf2` is used). No dependency updates available.
+- Open for the service owner: no preStop pause before shutdown, wide NetworkPolicy egress, `APP_ENV` defaults to `dev` if unset, Istio AuthorizationPolicy and ingress disabled by default in `values.yaml`.
+
 ### Changed — Production hardening: security, correctness, observability (2026-10-28)
 
 All changes on branch `bff-signup-initial`. Zero new features — every change is hardening, correctness, or observability.

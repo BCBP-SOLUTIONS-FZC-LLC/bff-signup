@@ -33,7 +33,7 @@ type RouterConfig struct {
 
 // NewRouter builds the Gin engine with all routes and middleware (LLD §5.2).
 func NewRouter(cfg RouterConfig) *gin.Engine {
-	r := gin.New()
+	r := newEngine()
 
 	// ── Platform observability middleware (metrics, structured logging, tracing) ─
 	// ObservabilityMiddlewares provides: PanicRecovery, RequestID, Tracing,
@@ -106,6 +106,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// SB-2: submit trial (CSRF + session required)
 		v1.POST("/trial",
 			middleware.ValidateOrigin(cfg.PublicHost),
+			middleware.RequireJSON(),
 			requireValidatedSession(cfg.SessionService),
 			cfg.Handlers.SubmitTrial,
 		)
@@ -119,6 +120,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// SB-4: change slug (CSRF + session required)
 		v1.POST("/:signup_id/slug",
 			middleware.ValidateOrigin(cfg.PublicHost),
+			middleware.RequireJSON(),
 			requireValidatedSession(cfg.SessionService),
 			cfg.Handlers.ChangeSlug,
 		)
@@ -128,6 +130,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		if cfg.PaidSignupEnabled {
 			v1.POST("/paid",
 				middleware.ValidateOrigin(cfg.PublicHost),
+				middleware.RequireJSON(),
 				requireValidatedSession(cfg.SessionService),
 				cfg.Handlers.SubmitPaid,
 			)

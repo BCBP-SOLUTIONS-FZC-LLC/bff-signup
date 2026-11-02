@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
@@ -20,7 +23,7 @@ type SignupInput struct {
 	Slug          string // may be empty → derived
 	AdminName     string
 	AdminEmail    string
-	Password      string // plain; zeroed after hashing (SB-INV-2)
+	Password      string // plain; Go strings are not zeroable — the []byte copy inside hasher.Hash is zeroed (SB-INV-2)
 	Plan          domain.Plan
 	AcceptTerms   bool
 	TermsVersion  string
@@ -34,6 +37,7 @@ type SignupInput struct {
 // SignupResult is the SB-2 response payload.
 type SignupResult struct {
 	SignupID              string
+	TenantID              string // for log correlation only (SB2-66); never returned to the client
 	State                 domain.HandoffState
 	EmailVerificationSent bool
 	SlugSuggestions       []string // set when State == slug_conflict
@@ -92,7 +96,33 @@ func NewSignupService(
 // The sequence: session validation → CAPTCHA → rate limit → validation →
 // resubmit check → lock → handoff → orchestrate.
 func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResult, error) {
+	in.CompanyName = domain.NormaliseCompanyName(in.CompanyName)
 	metrics.IncFormSubmitted("trial") // LLD §11.2
+
+	// Business attributes on the request span (LLD §11.3, O-03). IDs and state only:
+	// never email, name or password.
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.String("signup.id", in.Session.SignupID))
+
+	// ── 0. Same-email resume (G-1, LLD §5.4) ─────────────────────────────────
+	// A repeat SB-2 on a session whose identity already exists only resumes: it
+	// makes no downstream call and hashes no password, so it needs no new CAPTCHA
+	// and must not use up rate-limit budget (OBS-40). The session id comes from the
+	// validated session cookie, so this cheap read is not attacker-chosen.
+	// A read error is ignored here; step 4 reads again and returns 503.
+	emailHMAC := s.emailHMAC(in.AdminEmail)
+	if prior, getErr := s.handoffs.Get(ctx, in.Session.SignupID); getErr == nil && prior != nil {
+		switch prior.State { //nolint:exhaustive
+		case domain.StateIdentityCreated, domain.StateTenantPending, domain.StateSlugConflict:
+			if hmacEqual(prior.AdminEmailHMAC, emailHMAC) {
+				span.SetAttributes(
+					attribute.String("tenant.id", prior.TenantID),
+					attribute.String("handoff.state", string(prior.State)),
+				)
+				return &SignupResult{SignupID: prior.SignupID, TenantID: prior.TenantID, State: prior.State}, nil
+			}
+		}
+	}
 
 	// ── 1. CAPTCHA (SB-INV-5: runs before any internal call or CPU work) ─────
 	if err := s.captcha.Verify(ctx, in.CaptchaToken, in.ClientIP); err != nil {
@@ -100,8 +130,6 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	}
 
 	// ── 2. Rate limits (counted after CAPTCHA — G-2) ─────────────────────────
-	emailHMAC := s.emailHMAC(in.AdminEmail)
-
 	ipCount, ipReset, err := s.limiter.IncrIP(ctx, in.ClientIP)
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "rate limiter unavailable")
@@ -160,6 +188,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 
 	// ── 6. Allocate handoff ───────────────────────────────────────────────────
 	tenantID := s.idgen.NewUUIDv7()
+	span.SetAttributes(attribute.String("tenant.id", tenantID))
 	signupID := in.Session.SignupID
 	now := s.clock.Now()
 
@@ -212,8 +241,10 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		// Slug conflict: return the result (with suggestions) alongside the error
 		// so the handler can include suggestions in the 409 response.
 		if orcResult != nil && isDomainCause(err, domain.ErrSlugTaken) {
+			span.SetAttributes(attribute.String("handoff.state", string(orcResult.State)))
 			return &SignupResult{
 				SignupID:        signupID,
+				TenantID:        tenantID,
 				State:           orcResult.State,
 				SlugSuggestions: orcResult.SlugSuggestions,
 			}, err
@@ -221,8 +252,10 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		return nil, err
 	}
 
+	span.SetAttributes(attribute.String("handoff.state", string(orcResult.State)))
 	return &SignupResult{
 		SignupID:              signupID,
+		TenantID:              tenantID,
 		State:                 orcResult.State,
 		EmailVerificationSent: orcResult.EmailVerificationSent,
 		SlugSuggestions:       orcResult.SlugSuggestions,
@@ -248,6 +281,33 @@ func (s *SignupService) handleResubmit(
 			existing.Plan == in.Plan
 		if sameDetails {
 			// Retry with the same tenant_id and RP-1 idempotency key
+			// Take the handoff lock before re-running the orchestrator (LLD §9.2,
+			// OBS-37). Without it, a second request that arrives while the first is
+			// still waiting on RP-1 would call RP-1 again. If the lock is held, answer
+			// 409 invalid_state with retry_after_ms so the browser re-polls.
+			lockToken, acquired, lockErr := s.handoffs.AcquireLock(ctx, existing.SignupID)
+			if lockErr != nil {
+				return nil, true, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+			}
+			if !acquired {
+				return nil, true, domain.NewError(domain.ErrInvalidState, "another request is already processing this signup").
+					WithDetails(map[string]any{"retry_after_ms": 500})
+			}
+			defer func() {
+				// Lock TTL is 15 s — a release failure is non-fatal; the lock expires on its own.
+				_ = s.handoffs.ReleaseLock(ctx, existing.SignupID, lockToken)
+			}()
+			// The request that held the lock may have finished between our read and
+			// our lock. Re-read; if the handoff moved on, do not run RP-1 again.
+			current, getErr := s.handoffs.Get(ctx, existing.SignupID)
+			if getErr != nil {
+				return nil, true, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+			}
+			if current == nil || current.State != domain.StateAllocated {
+				return nil, true, domain.NewError(domain.ErrInvalidState, "another request just processed this signup").
+					WithDetails(map[string]any{"retry_after_ms": 500})
+			}
+			existing = current
 			metrics.IncHandoffResumed("resubmit") // LLD §11.2
 			seed, err := s.hasher.Hash(in.Password)
 			if err != nil {
@@ -267,13 +327,14 @@ func (s *SignupService) handleResubmit(
 				if orcResult != nil && isDomainCause(err, domain.ErrSlugTaken) {
 					return &SignupResult{
 						SignupID:        existing.SignupID,
+						TenantID:        existing.TenantID,
 						State:           orcResult.State,
 						SlugSuggestions: orcResult.SlugSuggestions,
 					}, true, err
 				}
 				return nil, true, err
 			}
-			return &SignupResult{SignupID: existing.SignupID, State: orcResult.State,
+			return &SignupResult{SignupID: existing.SignupID, TenantID: existing.TenantID, State: orcResult.State,
 				SlugSuggestions: orcResult.SlugSuggestions}, true, nil
 		}
 		// Different details while RP-1 not confirmed → discard and start fresh.
@@ -295,11 +356,11 @@ func (s *SignupService) handleResubmit(
 				WithDetails(map[string]any{"reason": "details_changed"})
 		}
 		// Resume — no new CAPTCHA hit or rate-limit increment
-		return &SignupResult{SignupID: existing.SignupID, State: existing.State}, true, nil
+		return &SignupResult{SignupID: existing.SignupID, TenantID: existing.TenantID, State: existing.State}, true, nil
 
 	case domain.StateCompleted:
 		if hmacEqual(existing.AdminEmailHMAC, emailHMAC) {
-			return &SignupResult{SignupID: existing.SignupID, State: domain.StateCompleted,
+			return &SignupResult{SignupID: existing.SignupID, TenantID: existing.TenantID, State: domain.StateCompleted,
 				EmailVerificationSent: true}, true, nil
 		}
 		return nil, true, domain.NewError(domain.ErrInvalidState, "signup already completed with different details").

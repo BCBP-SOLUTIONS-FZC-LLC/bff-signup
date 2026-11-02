@@ -18,7 +18,7 @@ Provide a clear description of the changes.
 ## Testing
 - [ ] Unit tests added/updated (`make test-unit`)
 - [ ] Integration tests added/updated — real Valkey (`make test-integration`)
-- [ ] Contract tests updated (`make test-contract`)
+- [ ] Contract tests updated (`test/unit/service/contract_test.go`, run by `make test-unit`)
 - [ ] All tests passing with race detector (`make race`)
 - [ ] Manual testing performed
 

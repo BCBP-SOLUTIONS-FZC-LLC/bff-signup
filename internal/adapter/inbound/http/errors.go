@@ -7,6 +7,7 @@ package http
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,20 @@ import (
 // response (application/problem+json) via gincommon.AbortWithProblem.
 // Matches iam-org-membership's HandleError pattern exactly.
 func HandleError(c *gin.Context, err error) {
+	setRetryAfter(c, err)
 	gincommon.AbortWithProblem(c, toDomainProblem(err))
+}
+
+// setRetryAfter copies details.retry_after_seconds of a rate-limit error into the
+// standard Retry-After header (LLD §10.2); the body field stays as well.
+func setRetryAfter(c *gin.Context, err error) {
+	var de *domain.DomainError
+	if !errors.As(err, &de) || !errors.Is(de.Cause, domain.ErrRateLimited) {
+		return
+	}
+	if secs, ok := de.Details["retry_after_seconds"].(int); ok && secs > 0 {
+		c.Header("Retry-After", strconv.Itoa(secs))
+	}
 }
 
 // toDomainProblem converts any service error to a *problem.Error for RFC 9457

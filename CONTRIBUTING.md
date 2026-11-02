@@ -110,8 +110,8 @@ The BFF's policy is the **only** enforcement at signup (Keycloak cannot check a 
 |---|---|---|---|
 | Unit | `test/unit/` | No | Hand-written fakes; no Valkey, no HTTP |
 | Integration | `test/integration/` | Yes | Real Valkey (`//go:build integration`) |
-| Contract | `test/contract/` | No | RP-1, I-1, eligibility request/response shapes |
-| E2E | `test/e2e/` | — | Staging environment; not automated yet |
+| Contract | `test/unit/service/contract_test.go` | No | RP-1, I-1, eligibility request/response shapes (run by `make test-unit`) |
+| E2E | `test/e2e/` | `make test-e2e` | Needs Docker only: starts its own Valkey container, mocks and service in-process (build tag `e2e`); runs in CI as its own step. Set `E2E_BASE_URL` to test a service you started yourself; see `test/e2e/README.md` |
 | Smoke | `.github/scripts/smoke-tests.sh` | — | Image size + startup gate |
 
 Run unit tests without Docker:

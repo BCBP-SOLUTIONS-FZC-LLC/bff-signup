@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
@@ -82,6 +85,12 @@ func (s *StatusService) GetStatus(ctx context.Context, sessionSignupID, pathSign
 		}
 	}
 
+	// Business attributes on the request span (LLD §11.3, O-03). IDs and state only.
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("signup.id", h.SignupID),
+		attribute.String("tenant.id", h.TenantID),
+		attribute.String("handoff.state", string(h.State)),
+	)
 	return stateToStatus(h), nil
 }
 

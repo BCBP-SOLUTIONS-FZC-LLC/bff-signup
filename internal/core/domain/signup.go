@@ -82,12 +82,8 @@ func ValidateAdminEmail(email string) error {
 	if len(local) > localPartMaxLen {
 		return NewError(ErrValidationFailed, "admin_email local part must not exceed 64 characters")
 	}
-	if strings.Contains(local, "..") {
-		return NewError(ErrValidationFailed, "admin_email local part must not contain consecutive dots")
-	}
-	if strings.HasPrefix(local, ".") || strings.HasSuffix(local, ".") {
-		return NewError(ErrValidationFailed, "admin_email local part must not start or end with a dot")
-	}
+	// Consecutive, leading and trailing dots in the local part are rejected above:
+	// mail.ParseAddress refuses them, so no separate check is needed here.
 	for _, r := range domainPart {
 		if r > 127 {
 			return NewError(ErrValidationFailed, "admin_email domain must be ASCII (use punycode for international domains)")
@@ -103,6 +99,13 @@ func ValidateAdminEmail(email string) error {
 // NormaliseEmail returns the email fully lowercased. Always call this before ValidateAdminEmail.
 func NormaliseEmail(email string) string {
 	return strings.ToLower(email)
+}
+
+// NormaliseCompanyName returns the company name in the form it must be stored
+// and forwarded to RP-1 and I-1: trimmed (LLD §5.1). Validation, the handoff
+// record and the downstream calls must all see this same value.
+func NormaliseCompanyName(name string) string {
+	return strings.TrimSpace(name)
 }
 
 // ValidatePassword checks the password against the policy (LLD §10.6).

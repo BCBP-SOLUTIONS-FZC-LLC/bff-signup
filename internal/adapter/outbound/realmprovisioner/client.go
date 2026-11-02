@@ -86,7 +86,7 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 			return nil, domain.NewError(domain.ErrEmailUnavailable, "email already registered in Keycloak")
 		case "OPERATION_IN_PROGRESS":
 			// Caller should retry with the same idempotency key
-			return nil, domain.NewError(domain.ErrInvalidState, "RP-1 operation in progress, retry")
+			return nil, domain.NewError(domain.ErrOperationInProgress, "RP-1 operation in progress, retry")
 		case "REALM_ALREADY_DEDICATED":
 			return nil, domain.NewError(domain.ErrInvalidState, "tenant realm is already dedicated — trial re-provision not allowed")
 		case "TENANT_OFFBOARDED":

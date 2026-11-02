@@ -52,8 +52,7 @@ help:
 	@echo "  make test-ci          - test with race detector + coverage (used in CI)"
 	@echo "  make test-unit        - unit tests only (no Docker required)"
 	@echo "  make test-integration - Valkey integration tests (requires Docker)"
-	@echo "  make test-contract    - contract tests for RP-1, I-1, eligibility"
-	@echo "  make test-e2e         - end-to-end tests against staging"
+	@echo "  make test-e2e         - end-to-end tests (needs Docker; starts Valkey, mocks and the service itself; run as its own CI step)"
 	@echo "  make test-smoke       - image size + startup gate (requires Docker)"
 	@echo "  make race             - all tests with -race flag"
 	@echo "  make run              - run the server locally (go run, sources .env)"
@@ -184,10 +183,6 @@ test-unit:
 .PHONY: test-integration
 test-integration:
 	$(GO) test $(TEST_INT_PKGS) -tags=integration -count=1 -timeout 300s -v
-
-.PHONY: test-contract
-test-contract:
-	$(GO) test ./test/contract/... -count=1 -timeout 120s -v
 
 .PHONY: test-e2e
 test-e2e:

@@ -13,6 +13,7 @@ var (
 	ErrTrialNotEligible      = errors.New("trial_not_eligible")
 	ErrSlugTaken             = errors.New("slug_taken")
 	ErrInvalidState          = errors.New("invalid_state")
+	ErrOperationInProgress   = errors.New("operation_in_progress") // RP-1 409 OPERATION_IN_PROGRESS; the orchestrator retries it, it never reaches the user
 	ErrRateLimited           = errors.New("rate_limited")
 	ErrDependencyUnavailable = errors.New("dependency_unavailable")
 	ErrInternal              = errors.New("internal_error")
