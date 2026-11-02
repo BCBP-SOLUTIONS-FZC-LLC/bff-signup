@@ -63,6 +63,7 @@ func TestSB2_43_EligibilityDownIs503AndRetriedOnce(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
+	assert.Equal(t, "DEPENDENCY_UNAVAILABLE", r.errorCode())
 	assert.Equal(t, 3, pinTTL(t, omURL, "eligibility"), "1 call + 1 retry = 2 calls used")
 }
 
@@ -73,6 +74,7 @@ func TestSB2_44_RP1DownIs503AndRetriedOnce(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
+	assert.Equal(t, "DEPENDENCY_UNAVAILABLE", r.errorCode())
 	assert.Equal(t, 3, pinTTL(t, rpURL, "rp1"), "1 call + 1 retry = 2 calls used")
 }
 
@@ -83,6 +85,7 @@ func TestSB2_45_RP1UnexpectedClientErrorIs500(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusInternalServerError, r.status, r.text())
+	assert.Equal(t, "INTERNAL_ERROR", r.errorCode())
 }
 
 func TestSB2_46_I1FailsOnceThenSucceedsIs201(t *testing.T) {
@@ -113,6 +116,7 @@ func TestSB2_49_I1SlugTakenIs409ThenStatusAsksForNewSlug(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusConflict, r.status, r.text())
+	assert.Equal(t, "SLUG_TAKEN", r.errorCode())
 	assert.Equal(t, 0, pinTTL(t, omURL, "i1"), "exactly one I-1 call, no retry")
 
 	// SB3-04: the status now asks the user to choose another slug.
@@ -232,6 +236,7 @@ func TestSB3_07_OtherSessionsSignupIs404(t *testing.T) {
 	r := other.do(t, http.MethodGet, "/api/v1/signup/"+owner.signupID+"/status", "", nil)
 
 	assert.Equal(t, http.StatusNotFound, r.status, r.text())
+	assert.Equal(t, "SIGNUP_NOT_FOUND", r.errorCode())
 }
 
 func TestSB3_08_UnknownSignupIs404(t *testing.T) {
@@ -240,6 +245,7 @@ func TestSB3_08_UnknownSignupIs404(t *testing.T) {
 	r := s.do(t, http.MethodGet, "/api/v1/signup/00000000-0000-4000-8000-000000000000/status", "", nil)
 
 	assert.Equal(t, http.StatusNotFound, r.status, r.text())
+	assert.Equal(t, "SIGNUP_NOT_FOUND", r.errorCode())
 }
 
 // SB3-09: the 61st poll within a minute on one session is refused.
@@ -253,6 +259,7 @@ func TestSB3_09_SixtyFirstPollIs429(t *testing.T) {
 	r := s.getStatus(t)
 
 	assert.Equal(t, http.StatusTooManyRequests, r.status, r.text())
+	assert.Equal(t, "RATE_LIMITED", r.errorCode())
 }
 
 func TestSB3_10_StatusWithoutCookieIs401(t *testing.T) {
@@ -275,6 +282,7 @@ func TestSB3_11_StatusAfterRejectedSignupIs404(t *testing.T) {
 	r := s.getStatus(t)
 
 	assert.Equal(t, http.StatusNotFound, r.status, r.text())
+	assert.Equal(t, "SIGNUP_NOT_FOUND", r.errorCode())
 }
 
 // SB3-12: two polls at the same time on tenant_pending make only ONE I-1 call.

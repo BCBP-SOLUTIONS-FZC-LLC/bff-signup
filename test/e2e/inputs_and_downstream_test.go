@@ -117,6 +117,7 @@ func expectBad(t *testing.T, overrides map[string]any, want string, drop ...stri
 	}
 	r := s.postTrial(t, p)
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
+	assert.Equal(t, "VALIDATION_FAILED", r.errorCode())
 	assert.Contains(t, strings.ToLower(r.text()), strings.ToLower(want))
 }
 
@@ -220,6 +221,7 @@ func TestSB2_H08_TamperedCookieIs401(t *testing.T) {
 	r := bad.postTrial(t, bad.trialPayload(nil))
 
 	assert.Equal(t, http.StatusUnauthorized, r.status, r.text())
+	assert.Equal(t, "SESSION_EXPIRED", r.errorCode())
 }
 
 func TestSB2_H09_HugeCaptchaTokenIs413(t *testing.T) {
@@ -261,6 +263,7 @@ func TestSB2_I02_DifferentDetailsWhileTenantPendingIs409(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusConflict, r.status, r.text())
+	assert.Equal(t, "INVALID_STATE", r.errorCode())
 	assert.Contains(t, r.text(), "details_changed")
 }
 
@@ -270,6 +273,7 @@ func TestSB2_I03_DifferentDetailsWhileSlugConflictIs409(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusConflict, r.status, r.text())
+	assert.Equal(t, "INVALID_STATE", r.errorCode())
 	assert.Contains(t, r.text(), "details_changed")
 }
 

@@ -171,6 +171,7 @@ func TestSB2_38_EligibilityTrialAlreadyUsedIs409(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusConflict, r.status, r.text())
+	assert.Equal(t, "TRIAL_NOT_ELIGIBLE", r.errorCode())
 }
 
 func TestSB2_39_Pub1SlugTakenIs409WithSuggestions(t *testing.T) {
@@ -190,5 +191,6 @@ func TestSB2_40_RP1EmailAlreadyRegisteredIs409(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusConflict, r.status, r.text())
+	assert.Equal(t, "EMAIL_UNAVAILABLE", r.errorCode())
 	assert.Contains(t, strings.ToUpper(r.text()), "EMAIL")
 }

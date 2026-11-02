@@ -30,6 +30,7 @@ func TestSB2_07_UnknownFieldRejected(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(map[string]any{"extra_field": "x"}))
 
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
+	assert.Equal(t, "VALIDATION_FAILED", r.errorCode())
 	assert.Contains(t, strings.ToLower(r.text()), "validation")
 }
 
@@ -55,6 +56,7 @@ func TestSB2_H11_MissingContentTypeRejected(t *testing.T) {
 	r := s.do(t, http.MethodPost, trialPath, "", mustJSON(t, s.trialPayload(nil)))
 
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
+	assert.Equal(t, "VALIDATION_FAILED", r.errorCode())
 }
 
 // SB2-H12: Content-Type text/plain is rejected with 400.
@@ -64,6 +66,7 @@ func TestSB2_H12_TextPlainContentTypeRejected(t *testing.T) {
 	r := s.do(t, http.MethodPost, trialPath, "text/plain", mustJSON(t, s.trialPayload(nil)))
 
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
+	assert.Equal(t, "VALIDATION_FAILED", r.errorCode())
 }
 
 // SB2-48: an unexpected 4xx from I-1 returns 500 and I-1 is called only once (no retry).
@@ -74,6 +77,7 @@ func TestSB2_48_I1ContractErrorFailsFast(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusInternalServerError, r.status, r.text())
+	assert.Equal(t, "INTERNAL_ERROR", r.errorCode())
 	assert.Equal(t, 4, pinTTL(t, omURL, "i1"), "I-1 must be called exactly once (5 -> 4 left)")
 }
 
@@ -181,4 +185,5 @@ func TestSB3_14_ValkeyDownReturns503(t *testing.T) {
 	r := s.getStatus(t)
 
 	assert.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
+	assert.Equal(t, "DEPENDENCY_UNAVAILABLE", r.errorCode())
 }

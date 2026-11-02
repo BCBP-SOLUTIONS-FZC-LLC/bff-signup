@@ -83,6 +83,7 @@ func TestSB2_36_RL01_FailedCaptchaDoesNotCountTowardLimits(t *testing.T) {
 		s := newSession(t, ip, nil)
 		r := s.postTrial(t, s.trialPayload(nil))
 		require.Equal(t, http.StatusForbidden, r.status, "same IP, attempt %d: %s", i, r.text())
+		require.Equal(t, "CAPTCHA_FAILED", r.errorCode())
 	}
 
 	email := "e2e+" + randomTag() + "@example.test"
@@ -90,6 +91,7 @@ func TestSB2_36_RL01_FailedCaptchaDoesNotCountTowardLimits(t *testing.T) {
 		s := newSession(t, randomIP(), nil)
 		r := s.postTrial(t, s.trialPayload(map[string]any{"admin_email": email}))
 		require.Equal(t, http.StatusForbidden, r.status, "same e-mail, attempt %d: %s", i, r.text())
+		require.Equal(t, "CAPTCHA_FAILED", r.errorCode())
 	}
 }
 
@@ -115,6 +117,7 @@ func TestSB2_42_M08_TurnstileDownIs503(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	assert.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
+	assert.Equal(t, "DEPENDENCY_UNAVAILABLE", r.errorCode())
 	assert.Greater(t, captchaResult(t, "error"), before)
 }
 
@@ -128,6 +131,7 @@ func TestSB2_42_TurnstileIsNotRetried(t *testing.T) {
 	r := s.postTrial(t, s.trialPayload(nil))
 
 	require.Equal(t, http.StatusServiceUnavailable, r.status, r.text())
+	require.Equal(t, "DEPENDENCY_UNAVAILABLE", r.errorCode())
 	assert.Equal(t, before+1, turnstileCalls(t), "LLD 9.3: no retry, so exactly one Turnstile call")
 }
 

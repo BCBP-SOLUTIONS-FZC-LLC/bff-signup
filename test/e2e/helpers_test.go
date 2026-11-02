@@ -81,6 +81,15 @@ type reply struct {
 
 func (r reply) text() string { return string(r.body) }
 
+// errorCode returns the errorCode member of an RFC 9457 error body ("" if absent).
+func (r reply) errorCode() string {
+	var b struct {
+		ErrorCode string `json:"errorCode"`
+	}
+	_ = json.Unmarshal(r.body, &b)
+	return b.ErrorCode
+}
+
 func (r reply) cookie(name string) *http.Cookie {
 	for _, c := range r.cookies {
 		if c.Name == name {

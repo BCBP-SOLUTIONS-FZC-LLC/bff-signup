@@ -54,6 +54,7 @@ func TestSB4_02_SlugTakenAgainIs409WithSuggestions(t *testing.T) {
 	r := s.postSlug(t, freeSlug())
 
 	assert.Equal(t, http.StatusConflict, r.status, r.text())
+	assert.Equal(t, "SLUG_TAKEN", r.errorCode())
 	assert.Contains(t, r.text(), "suggestions")
 }
 
@@ -72,6 +73,7 @@ func TestSB4_04_BadSlugFormatIs400(t *testing.T) {
 	r := s.postSlug(t, "Bad_Slug!")
 
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
+	assert.Equal(t, "VALIDATION_FAILED", r.errorCode())
 }
 
 // SB4-05: the 6th slug attempt is refused without calling I-1.
@@ -114,6 +116,7 @@ func TestSB4_09_ReservedSlugIs400(t *testing.T) {
 	r := s.postSlug(t, "api")
 
 	assert.Equal(t, http.StatusBadRequest, r.status, r.text())
+	assert.Equal(t, "VALIDATION_FAILED", r.errorCode())
 }
 
 // SB4-10: state allocated (RP-1 failed, nothing created yet) → not awaiting a slug.
