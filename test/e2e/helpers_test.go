@@ -1,15 +1,15 @@
 //go:build e2e
 
-// Package e2e_test holds end-to-end tests: they send real HTTP requests to a
-// running bff-signup, with real Valkey and the two mock servers behind it
-// (O&M on :9002, Realm Provisioner on :9003). Nothing is faked in-process.
+// Package e2e_test holds end-to-end tests: real HTTP requests to bff-signup with
+// a real Valkey and the two downstream mocks (Org & Membership, Realm Provisioner)
+// behind it.
 //
-// Run (see test/e2e/README.md):
+// By default (CI and `make test-e2e`) the suite starts everything itself in
+// process: a Valkey testcontainer, Go versions of the mocks and the real router
+// (harness_test.go, mocks_test.go). Only Docker is needed.
 //
-//  1. start Valkey            make docker-up
-//  2. start the mocks         ~/BCBP-IAM/bff/mocks/run_all.sh
-//  3. start the service       make run         (needs CAPTCHA_SKIP=true in .env)
-//  4. run the tests           make test-e2e
+// To test a service you started yourself (make run, the Python mocks in
+// ~/BCBP-IAM/bff/mocks, make docker-up) set E2E_BASE_URL; see test/e2e/README.md.
 //
 // Every test uses its own random client IP (x-envoy-external-address), e-mail
 // and slug, so tests do not use up each other's rate-limit budget.
@@ -58,16 +58,32 @@ var (
 	}
 )
 
-// TestMain stops early, with a clear message, when the service or a mock is not running.
-func TestMain(m *testing.M) {
-	for _, u := range []string{baseURL + "/healthz", omURL + "/__mock/health", rpURL + "/__mock/health"} {
-		r, err := rawDo(context.Background(), http.MethodGet, u, "", nil)
-		if err != nil || r.status != http.StatusOK {
-			fmt.Fprintf(os.Stderr, "E2E prerequisite not reachable: %s\nStart Valkey, the mocks and the service first (see test/e2e/README.md).\n", u)
-			os.Exit(1)
+// TestMain decides where the tests run. With E2E_BASE_URL set it uses the
+// running service, Valkey and mocks you started yourself (and stops early, with a
+// clear message, if one is not reachable). Without it, it starts its own in-process
+// stack (harness_test.go), which needs only Docker.
+func TestMain(m *testing.M) { os.Exit(runMain(m)) }
+
+func runMain(m *testing.M) int {
+	if os.Getenv("E2E_BASE_URL") != "" {
+		for _, u := range []string{baseURL + "/healthz", omURL + "/__mock/health", rpURL + "/__mock/health"} {
+			r, err := rawDo(context.Background(), http.MethodGet, u, "", nil)
+			if err != nil || r.status != http.StatusOK {
+				fmt.Fprintf(os.Stderr, "E2E prerequisite not reachable: %s\nStart Valkey, the mocks and the service first (see test/e2e/README.md).\n", u)
+				return 1
+			}
 		}
+		return m.Run()
 	}
-	os.Exit(m.Run())
+
+	s, err := startStack(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "E2E stack did not start: %v\nStart Docker, or set E2E_BASE_URL to test a service that is already running.\n", err)
+		return 1
+	}
+	defer s.close()
+	baseURL, omURL, rpURL, metricsURL, origin = s.baseURL, s.omURL, s.rpURL, s.metricsURL, s.origin
+	return m.Run()
 }
 
 // reply is one HTTP response, fully read.

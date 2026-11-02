@@ -52,7 +52,7 @@ help:
 	@echo "  make test-ci          - test with race detector + coverage (used in CI)"
 	@echo "  make test-unit        - unit tests only (no Docker required)"
 	@echo "  make test-integration - Valkey integration tests (requires Docker)"
-	@echo "  make test-e2e         - end-to-end tests (needs the running service, Valkey and the mocks; not part of test-ci)"
+	@echo "  make test-e2e         - end-to-end tests (needs Docker; starts Valkey, mocks and the service itself; run as its own CI step)"
 	@echo "  make test-smoke       - image size + startup gate (requires Docker)"
 	@echo "  make race             - all tests with -race flag"
 	@echo "  make run              - run the server locally (go run, sources .env)"

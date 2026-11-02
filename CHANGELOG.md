@@ -8,6 +8,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — E2E suite runs in CI (2026-11-02)
+
+Review item from Sharmila on PR #2: the E2E suite was not part of CI because it needed a running service, Valkey and mocks started by hand.
+
+- `test/e2e/harness_test.go` starts everything in the test process: a Valkey testcontainer, the real router and services behind `httptest`, and Go versions of the O&M and RP-1 mocks (`mocks_test.go`), as in `iam-org-membership`.
+- `make test-e2e` now needs only Docker. Setting `E2E_BASE_URL` still runs the suite against a service started by hand.
+- New `Tests — e2e` step in `validate-test.yml` (job timeout 15 → 20 minutes). Captcha-mode, paid-mode, log-file and Valkey-down tests stay skipped in CI.
+- New test dependency: `testcontainers-go`.
+
 ### Fixed — Test-gap fixes from manual API testing (2026-10-30)
 
 Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), each fixed in its own commit.
