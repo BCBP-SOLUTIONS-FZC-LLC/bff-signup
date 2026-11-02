@@ -26,6 +26,10 @@ Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), e
 - **S-05** — password bytes are zeroed after PBKDF2.
 - **O-03** — spans carry `signup.id`, `tenant.id` and `handoff.state` (direct OpenTelemetry import, as instructed by the service owner).
 
+### Fixed — Review finding on the RP-1 retry wait (2026-11-02)
+
+- **RP-1 retry wait** (`handoff_orchestrator.go`, `provisionRP1`) — when the request context ended while waiting to retry a 409 `OPERATION_IN_PROGRESS`, the internal `ErrOperationInProgress` was returned as it was and the user got a 500. It now returns `ErrDependencyUnavailable` (503), like every other RP-1 failure. Two unit tests cover a cancelled context and a deadline that expires during the wait.
+
 ### Fixed — Spec gaps rectified after E2E testing (2026-10-31)
 
 Code now follows the LLD (SB1-02, SB2-34, SB2-RP01, SB2-43, SB2-44, OBS-41, OBS-51, OBS-55):

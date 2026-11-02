@@ -348,7 +348,10 @@ func (o *HandoffOrchestrator) provisionRP1(ctx context.Context, req port.Provisi
 			return nil, err
 		}
 		if !pause(ctx, retryPause) {
-			return nil, err
+			// The request context ended while waiting to retry. err may still be
+			// ErrOperationInProgress, which has no HTTP mapping and must never
+			// reach the user, so report RP-1 as unavailable (503) instead.
+			return nil, domain.NewError(domain.ErrDependencyUnavailable, "request ended while waiting to retry RP-1")
 		}
 	}
 }

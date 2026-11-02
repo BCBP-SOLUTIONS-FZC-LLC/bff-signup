@@ -254,3 +254,33 @@ func TestOrchestrator_ChangeSlug_HappyPath(t *testing.T) {
 	require.Len(t, om.I1Calls, 1)
 	assert.Equal(t, "acme-2", om.I1Calls[0].Slug)
 }
+
+// provisionRP1 is unexported, so these tests reach it through Run.
+// When the request context ends while the orchestrator waits to retry an
+// in-progress 409, the user must get ErrDependencyUnavailable (503) and never
+// the internal ErrOperationInProgress (which has no HTTP mapping).
+func TestProvisionRP1_ContextCancelledDuringInProgressRetry_ReturnsDependencyUnavailable(t *testing.T) {
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	rp.Err = rpInProgress()
+
+	err := runWithContext(cancelledContext(), t, fixtures.NewFakeHandoffStore(), rp, fixtures.NewFakeOrgMembership("tid"))
+
+	require.Error(t, err)
+	assert.True(t, isCause(err, domain.ErrDependencyUnavailable))
+	assert.False(t, isCause(err, domain.ErrOperationInProgress), "ErrOperationInProgress must never reach the user")
+	assert.Len(t, rp.Calls, 1, "no retry once the context is cancelled")
+}
+
+func TestProvisionRP1_DeadlineExpiresDuringInProgressRetryWait_ReturnsDependencyUnavailable(t *testing.T) {
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	rp.Err = rpInProgress()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err := runWithContext(ctx, t, fixtures.NewFakeHandoffStore(), rp, fixtures.NewFakeOrgMembership("tid"))
+
+	require.Error(t, err)
+	assert.True(t, isCause(err, domain.ErrDependencyUnavailable))
+	assert.False(t, isCause(err, domain.ErrOperationInProgress), "ErrOperationInProgress must never reach the user")
+	assert.Len(t, rp.Calls, 1, "the deadline cuts the retry wait short, so there is no second call")
+}
