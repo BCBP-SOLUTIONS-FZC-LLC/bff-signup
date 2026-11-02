@@ -13,7 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Branch `test/gap-fix`. 15 gaps found in manual testing (185 of 194 cases run), each fixed in its own commit.
 
 - **SB2-07** — unknown or duplicate JSON fields in the request body are now rejected (`strict_json.go`).
-- **SB2-H10** — company name is normalised before validation (`company_name.go`); a body of exactly 16 KiB is accepted, larger returns 413.
+- **SB2-H10** — company name is normalised before validation (`NormaliseCompanyName` in `domain/signup.go`); a body of exactly 16 KiB is accepted, larger returns 413.
 - **SB2-H11 / SB2-H12** — POST requests without `Content-Type: application/json` return 400 (`middleware/content_type.go`).
 - **SB2-48** — I-1 contract errors fail fast instead of retrying (orchestrator `runI1`).
 - **SB2-56 / I-03** — a concurrent double submit of the same signup returns 409 with `retry_after_ms` instead of racing (`handleResubmit` lock).
@@ -50,7 +50,6 @@ Known effect: during a real RP-1 or O&M outage, dependency-call metrics show abo
 ### Known / accepted
 
 - `govulncheck` reports GO-2026-5932; not reachable (only `pbkdf2` is used). No dependency updates available.
-- Finding for the service owner (OBS-55): RP-1 and eligibility are not retried once on 502/503 as LLD §17.2 says; the service makes one call. Not changed here.
 - Open for the service owner: no preStop pause before shutdown, wide NetworkPolicy egress, `APP_ENV` defaults to `dev` if unset, Istio AuthorizationPolicy and ingress disabled by default in `values.yaml`.
 
 ### Changed — Production hardening: security, correctness, observability (2026-10-28)
