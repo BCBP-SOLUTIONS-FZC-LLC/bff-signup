@@ -141,6 +141,7 @@ func TestSB1_04_ResponseHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
 	assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
 	assert.Equal(t, "DENY", resp.Header.Get("X-Frame-Options"))

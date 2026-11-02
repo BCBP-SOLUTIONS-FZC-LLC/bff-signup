@@ -110,7 +110,7 @@ The BFF's policy is the **only** enforcement at signup (Keycloak cannot check a 
 |---|---|---|---|
 | Unit | `test/unit/` | No | Hand-written fakes; no Valkey, no HTTP |
 | Integration | `test/integration/` | Yes | Real Valkey (`//go:build integration`) |
-| Contract | `test/contract/` | No | RP-1, I-1, eligibility request/response shapes |
+| Contract | `test/unit/service/contract_test.go` | No | RP-1, I-1, eligibility request/response shapes (run by `make test-unit`) |
 | E2E | `test/e2e/` | `make test-e2e` | Needs the service, Valkey and mocks running locally (build tag `e2e`); see `test/e2e/README.md`. Covers the gap fixes; more cases to follow |
 | Smoke | `.github/scripts/smoke-tests.sh` | — | Image size + startup gate |
 

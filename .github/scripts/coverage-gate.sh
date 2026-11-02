@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Enforces minimum total test coverage (default 95%).
+# Enforces minimum total test coverage (default 97%).
 # Override with COVERAGE_THRESHOLD=<n> in CI if needed.
 set -euo pipefail
 
-THRESHOLD="${COVERAGE_THRESHOLD:-95}"
+THRESHOLD="${COVERAGE_THRESHOLD:-97}"
 
 test -f coverage.out || {
   echo "::error file=coverage.out,title=Coverage gate::coverage.out missing — run 'make test-ci' before the coverage gate"

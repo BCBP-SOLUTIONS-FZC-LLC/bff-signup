@@ -36,7 +36,12 @@ func valkeyClient(t *testing.T) *redis.Client {
 	rdb := redis.NewClient(opts)
 
 	if pingErr := rdb.Ping(context.Background()).Err(); pingErr != nil {
-		// Real Valkey unreachable — fall back to in-process miniredis.
+		// In CI the service container must be there: a silent fall back would let a
+		// broken Valkey pass these tests without ever touching Valkey.
+		if os.Getenv("CI") != "" {
+			t.Fatalf("CI needs a real Valkey at %s: %v", url, pingErr)
+		}
+		// Locally, with no Valkey running, fall back to in-process miniredis.
 		_ = rdb.Close()
 		mr := miniredis.RunT(t) // stopped automatically when t ends
 		rdb = redis.NewClient(&redis.Options{Addr: mr.Addr()})
