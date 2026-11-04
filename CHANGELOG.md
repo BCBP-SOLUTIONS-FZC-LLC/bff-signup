@@ -8,6 +8,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Local Trivy pre-push gate (2026-11-04)
+
+- **`make trivy`** (`Makefile`) — builds the image with the `go_private_token` build secret (from `GO_PRIVATE_TOKEN`, else `gh auth token`) and runs `trivy image --severity CRITICAL,HIGH,UNKNOWN --ignore-unfixed --ignorefile .trivyignore --exit-code 1`, the same gate as `ci.yml`'s "Trivy CVE scan" job. Mirrors `iam-org-membership`.
+- **`.githooks/pre-push`** — runs `make trivy` before every push; fails fast if Docker is not running. Skip once with `SKIP_TRIVY=1 git push` or `git push --no-verify`.
+- **`make setup` / `make install-hooks`** now install both `pre-commit` and `pre-push`.
+
 ### Changed — E2E suite runs in CI (2026-11-02)
 
 Review item from Sharmila on PR #2: the E2E suite was not part of CI because it needed a running service, Valkey and mocks started by hand.

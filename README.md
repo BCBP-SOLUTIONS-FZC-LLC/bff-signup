@@ -250,7 +250,7 @@ The generated files (`docs/swagger/docs.go`, `swagger.json`, `swagger.yaml`) are
 ```bash
 git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup
 cd bff-signup
-make setup          # copies .env-example → .env + installs pre-commit hook
+make setup          # copies .env-example → .env + installs pre-commit and pre-push hooks
 go mod tidy         # download all dependencies
 make docker-up      # start local Valkey on :6379
 make run            # start server on :8080

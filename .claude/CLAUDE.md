@@ -105,3 +105,20 @@ make ci              # full local CI gate (tidy + fmt + vet + lint + arch-lint +
 
 See `docs/lld/signup-bff-open-questions-tl.md` — 4 items in Section A need TL sign-off.
 Remaining team actions tracked in `docs/lld/signup-bff-action-tracker.md`.
+
+---
+
+## Claude Code tooling (in `.claude/`)
+
+- **Hooks** (`settings.json`):
+  - Edits to `.env*` (except `.env-example`), `go.sum`, `coverage.out`, `.docker-digests` and `docs/swagger/` are blocked. Use `make tidy`, `make swag` and the other make targets to change them.
+  - Every edited `.go` file is `gofmt`-ed, and its package goes through `go vet -tags=integration,e2e`.
+- **Subagents:**
+  - `security-reviewer` covers the threat model for the public, unauthenticated surface.
+  - `arch-guard` covers the layering rules plus the metrics, logging and wiring conventions.
+  - Run both before opening a PR.
+- **Skills:**
+  - `/add-endpoint <METHOD> <path> — <purpose>` gives the full checklist for a new or changed route.
+  - `/run-local-e2e` (local only, needs `../mocks`) starts Valkey, the mocks and the BFF, then drives SB-1 → SB-3.
+- **Git hooks:** `make install-hooks` installs `pre-commit` (tidy, fmt-check, vet, arch-lint) and `pre-push` (`make trivy`, the CI Trivy CVE gate; skip with `SKIP_TRIVY=1`). If a push fails on Trivy, fix the CVE or add a justified, expiring `.trivyignore` entry. Never bypass silently.
+- **MCP:** `context7` (`.mcp.json`) provides current gin, go-redis, swag and prometheus docs.

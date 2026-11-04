@@ -34,14 +34,14 @@ ALL_TEST_TAGS := integration
 setup:
 	@test -f .env || cp .env-example .env
 	@mkdir -p .git/hooks
-	@cp .githooks/pre-commit .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
+	@test -f .githooks/pre-commit && cp .githooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit || true
+	@test -f .githooks/pre-push && cp .githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push || true
 	@echo "Environment ready (.env)"
 
 .PHONY: help
 help:
 	@echo "Available commands:"
-	@echo "  make setup            - copy .env-example to .env if missing; install pre-commit hook"
+	@echo "  make setup            - copy .env-example to .env if missing; install .githooks/pre-commit + pre-push"
 	@echo "  make tidy             - go mod tidy"
 	@echo "  make fmt              - go fmt ./..."
 	@echo "  make vet              - go vet (default build + every test build tag)"
@@ -68,7 +68,8 @@ help:
 	@echo "  make fmt-check        - verify gofmt formatting (no changes applied)"
 	@echo "  make mod-verify       - go mod verify (check module download integrity)"
 	@echo "  make vuln-check       - govulncheck on internal and pkg packages"
-	@echo "  make install-hooks    - install local git hooks (.githooks -> .git/hooks)"
+	@echo "  make install-hooks    - install .githooks/pre-commit + pre-push into .git/hooks"
+	@echo "  make trivy            - build the image and Trivy-scan it like CI (CRITICAL/HIGH/UNKNOWN, fixed only); run by .githooks/pre-push"
 	@echo "  make pin-base-images  - fetch SHA digests and pin Dockerfile base images"
 	@echo "  make godoc            - serve package docs locally via pkgsite"
 	@echo "  make clean            - remove build artefacts"
@@ -198,6 +199,29 @@ test-load:
 test-smoke:
 	docker build --tag bff-signup-ci-test .
 	bash .github/scripts/smoke-tests.sh
+
+# -----------------------------
+# SECURITY SCAN
+# -----------------------------
+
+# trivy: build the image and scan it exactly like ci.yml's "Trivy CVE scan"
+# job — CRITICAL/HIGH/UNKNOWN, fixed-only, exit 1 on findings; .trivyignore
+# applies. Run by .githooks/pre-push. The Dockerfile needs the
+# go_private_token build secret: GO_PRIVATE_TOKEN from the environment, else
+# `gh auth token`. Mirrors iam-org-membership's `make trivy`.
+TRIVY_IMAGE ?= bff-signup-trivy
+GO_PRIVATE_TOKEN ?= $(shell gh auth token 2>/dev/null)
+export GO_PRIVATE_TOKEN
+
+.PHONY: trivy
+trivy:
+	@command -v trivy >/dev/null || { echo "trivy not found (brew install trivy)"; exit 1; }
+	@test -n "$$GO_PRIVATE_TOKEN" || { echo "GO_PRIVATE_TOKEN is empty: export it or run 'gh auth login'"; exit 1; }
+	docker build --platform linux/amd64 \
+	  --secret id=go_private_token,env=GO_PRIVATE_TOKEN \
+	  -t $(TRIVY_IMAGE) .
+	trivy image --severity CRITICAL,HIGH,UNKNOWN --ignore-unfixed \
+	  --ignorefile .trivyignore --exit-code 1 $(TRIVY_IMAGE)
 
 # -----------------------------
 # RUN
@@ -347,7 +371,8 @@ swag-check:
 install-hooks:
 	@mkdir -p .git/hooks
 	@cp .githooks/pre-commit .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
+	@cp .githooks/pre-push .git/hooks/pre-push
+	@chmod +x .git/hooks/pre-commit .git/hooks/pre-push
 	@echo "Installed git hooks"
 
 # godoc: serve package documentation locally using pkgsite.

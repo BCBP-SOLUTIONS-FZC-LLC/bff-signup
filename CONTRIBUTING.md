@@ -14,7 +14,7 @@ This is the public-facing trial-signup BFF for the XpertPMS platform. This guide
 ```bash
 git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup
 cd bff-signup
-make setup          # copies .env-example → .env + installs .githooks/pre-commit
+make setup          # copies .env-example → .env + installs .githooks/pre-commit + pre-push
 make tidy           # go mod tidy
 make docker-up      # start local Valkey on :6379
 make lint           # verify linter passes
@@ -23,7 +23,7 @@ make test-integration  # integration tests (requires Docker)
 make run            # start server on :8080
 ```
 
-`make setup` installs `.githooks/pre-commit`, which runs `tidy`, `fmt-check`, `vet`, `lint`, and `arch-lint` before every commit.
+`make setup` installs `.githooks/pre-commit`, which runs `tidy`, `fmt-check`, `vet`, `lint`, and `arch-lint` before every commit, and `.githooks/pre-push`, which runs `make trivy` (builds the image and Trivy-scans it exactly like CI's "Trivy CVE scan" job) before every push. The push gate needs Docker running and `trivy` installed (`brew install trivy`); skip it once with `SKIP_TRIVY=1 git push` or `git push --no-verify`.
 
 ## Project layout
 
