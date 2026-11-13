@@ -53,6 +53,7 @@ components:
       - internal/adapter/outbound/turnstile
       - internal/adapter/outbound/catalog
       - internal/adapter/outbound/hasher
+      - internal/adapter/outbound/billing
 
   cmd:
     in:

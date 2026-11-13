@@ -58,15 +58,15 @@ var PlatformRegistry = []RegistryEntry{
 		Name:               "platform_dependency_request_seconds",
 		Tier:               "platform",
 		Status:             StatusProposed,
-		SemanticDefinition: "Client-observed wall time of one call to an external dependency, by outcome. Mirrors the iam-org-membership submission (registry.go). This service records synchronous REST calls to Realm Provisioner (RP-1), Org & Membership (I-1, eligibility, PUB-1), Turnstile (CAPTCHA) and the Catalog Service.",
+		SemanticDefinition: "Client-observed wall time of one call to an external dependency, by outcome. Mirrors the iam-org-membership submission (registry.go). This service records synchronous REST calls to Realm Provisioner (RP-1), Org & Membership (I-1, eligibility, PUB-1), Turnstile (CAPTCHA), the Catalog Service and the Billing Service (SGN-2).",
 		RequiredLabels:     []string{"domain", "service", "environment"},
 		ApprovedLabels:     []string{"dependency", "operation", "outcome"},
 		LabelValues: map[string][]string{
-			"dependency": {"realm_provisioner", "org_membership", "turnstile", "catalog"},
+			"dependency": {"realm_provisioner", "org_membership", "turnstile", "catalog", "billing"},
 			"operation":  {"provision_trial (RP-1), provision_direct (RP-2), provision_tenant (I-1), trial_eligibility (CR-4), slug_resolve (PUB-1), siteverify (Turnstile), plans (Catalog)"},
 			"outcome":    {"success", "error"}, // error = transport failure or 5xx
 		},
-		Cardinality:      "Bounded — 4 peers × a handful of endpoints each × 2 outcomes; no request/session/tenant identifier is ever a label value.",
+		Cardinality:      "Bounded — 5 peers × a handful of endpoints each × 2 outcomes; no request/session/tenant identifier is ever a label value.",
 		AggregationNotes: "Error ratio per dependency: sum by (domain,service,environment,dependency) (rate(platform_dependency_request_seconds_count{outcome=\"error\"}[w])) / sum by (domain,service,environment,dependency) (rate(platform_dependency_request_seconds_count[w])). p99: histogram_quantile(0.99, sum by (le,domain,service,environment,dependency) (rate(platform_dependency_request_seconds_bucket[w]))).",
 		SupersedesTier3:  []string{"bff_signup_dependency_call_duration_seconds"},
 	},

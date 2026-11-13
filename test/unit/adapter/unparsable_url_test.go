@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	billingadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/billing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/orgmembership"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/realmprovisioner"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
@@ -44,4 +45,12 @@ func TestRealmProvisioner_UnparsableBaseURL(t *testing.T) {
 
 	assert.True(t, isInternal(err1))
 	assert.True(t, isInternal(err2))
+}
+
+func TestBilling_UnparsableBaseURL(t *testing.T) {
+	c := billingadapter.New(unparsableBaseURL, time.Second)
+
+	_, err := c.AuthorizeAndCharge(context.Background(), port.ChargeRequest{TenantID: "t"})
+	require.Error(t, err)
+	assert.True(t, isInternal(err))
 }

@@ -184,9 +184,10 @@ func (s *PaidSignupService) Submit(ctx context.Context, in PaidSignupInput) (*Pa
 		IdempotencyKey: fmt.Sprintf("charge:%s", tenantID),
 	})
 	if err != nil {
-		// Billing failure is terminal for this attempt — delete so the user can retry.
+		// Billing failure is terminal — delete the handoff so the user can retry.
+		// ErrPaymentDeclined surfaces as 422; ErrDependencyUnavailable as 503.
 		_ = s.handoffs.Delete(ctx, signupID)
-		return nil, domain.NewError(domain.ErrDependencyUnavailable, "payment service unavailable")
+		return nil, err
 	}
 
 	h.BillingSubscriptionID = chargeResp.BillingSubscriptionID

@@ -82,6 +82,8 @@ func domainErrorToProblem(de *domain.DomainError) *problem.Error {
 		errors.Is(de.Cause, domain.ErrSlugTaken),
 		errors.Is(de.Cause, domain.ErrInvalidState):
 		return problem.NewConflictError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrPaymentDeclined):
+		return problem.NewBusinessRuleError(msg).WithCode(code)
 	case errors.Is(de.Cause, domain.ErrRateLimited):
 		return problem.NewRateLimitError(msg).WithCode(code)
 	case errors.Is(de.Cause, domain.ErrDependencyUnavailable):
