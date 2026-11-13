@@ -14,7 +14,6 @@ var (
 	ErrSlugTaken             = errors.New("slug_taken")
 	ErrInvalidState          = errors.New("invalid_state")
 	ErrOperationInProgress   = errors.New("operation_in_progress") // RP-1 409 OPERATION_IN_PROGRESS; the orchestrator retries it, it never reaches the user
-	ErrPaymentDeclined       = errors.New("payment_declined")      // 422 — card declined; terminal, user must fix payment method
 	ErrRateLimited           = errors.New("rate_limited")
 	ErrDependencyUnavailable = errors.New("dependency_unavailable")
 	ErrInternal              = errors.New("internal_error")

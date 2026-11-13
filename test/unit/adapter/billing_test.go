@@ -108,7 +108,7 @@ func TestBilling_AuthorizeAndCharge_402_PaymentDeclined(t *testing.T) {
 	require.Error(t, err)
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, domain.ErrPaymentDeclined, de.Cause)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
 }
 
 func TestBilling_AuthorizeAndCharge_400_BadRequest(t *testing.T) {

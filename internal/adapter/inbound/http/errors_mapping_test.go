@@ -25,7 +25,6 @@ func TestHandleError_EveryDomainErrorMapsToItsStatus(t *testing.T) {
 		{domain.ErrTrialNotEligible, http.StatusConflict},
 		{domain.ErrSlugTaken, http.StatusConflict},
 		{domain.ErrInvalidState, http.StatusConflict},
-		{domain.ErrPaymentDeclined, http.StatusUnprocessableEntity},
 		{domain.ErrRateLimited, http.StatusTooManyRequests},
 		{domain.ErrDependencyUnavailable, http.StatusServiceUnavailable},
 		{domain.ErrInternal, http.StatusInternalServerError},

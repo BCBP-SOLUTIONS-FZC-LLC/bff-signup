@@ -102,7 +102,7 @@ func (c *Client) AuthorizeAndCharge(ctx context.Context, req port.ChargeRequest)
 
 	case http.StatusPaymentRequired:
 		// 402 — card declined; terminal, the user must fix their payment method
-		return nil, domain.NewError(domain.ErrPaymentDeclined, "payment was declined by the payment processor")
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "payment was declined by the payment processor")
 
 	case http.StatusConflict:
 		// SUBSCRIPTION_ALREADY_EXISTS: idempotent replay — return the existing subscription ID
