@@ -162,6 +162,28 @@ func TestRateLimiter_IncrAndWindow(t *testing.T) {
 	rdb.Del(ctx, "sbff:rl:ip:"+ip)
 }
 
+// TestRateLimiter_DefensiveTTLFallback covers the ttlSecs<=0 branch (rate_limiter.go:80).
+// A key pre-seeded without an expiry causes the Lua script to skip EXPIRE (count!=1),
+// so TTL returns -1; the defensive path clamps ttlSecs to the window duration.
+func TestRateLimiter_DefensiveTTLFallback(t *testing.T) {
+	rdb := valkeyClient(t)
+	limiter := valkey.NewRateLimiter(rdb)
+	ctx := context.Background()
+
+	ip := "integ-test-ip-no-ttl-192.0.2.99"
+	key := "sbff:rl:ip:" + ip
+
+	// Pre-seed key at count=1 with NO expiry. The next INCR gives count=2 (≠1),
+	// so the Lua script skips EXPIRE and TTL returns -1 → defensive fallback fires.
+	require.NoError(t, rdb.Set(ctx, key, "1", 0).Err())
+	t.Cleanup(func() { rdb.Del(ctx, key) })
+
+	count, resetAt, err := limiter.IncrIP(ctx, ip)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count)
+	assert.True(t, resetAt.After(time.Now()), "resetAt must be in the future even after fallback")
+}
+
 func TestRateLimiter_AllIncrMethods(t *testing.T) {
 	rdb := valkeyClient(t)
 	limiter := valkey.NewRateLimiter(rdb)

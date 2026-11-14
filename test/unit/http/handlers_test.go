@@ -1043,3 +1043,76 @@ func TestHandlerSubmitTrial_NoSession_Returns401(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
+
+// TestHandlerSubmitTrial_StateIdentityCreated_Returns202 covers the default branch in
+// SubmitTrial's switch (line 208). When an existing handoff is in StateIdentityCreated
+// with a matching email, the signup service's fast path returns that state without error,
+// and the handler's default case answers 202 Accepted.
+func TestHandlerSubmitTrial_StateIdentityCreated_Returns202(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	h := buildHandlers(
+		fixtures.NewFakeSessionStore(), handoffs,
+		fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		fixtures.NewFakeRealmProvisioner("kc-001"), fixtures.NewFakeOrgMembership("tid"),
+		fixtures.NewFakeCatalog(),
+	)
+
+	// First POST creates the handoff (StateCompleted after success).
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/trial", trialBody(t, nil))
+	req.Header.Set("Content-Type", "application/json")
+	newRouter(h).ServeHTTP(w, req)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	// Patch the stored handoff to StateIdentityCreated (simulating a partial provisioning).
+	ho, getErr := handoffs.Get(context.Background(), testSession().SignupID)
+	require.NoError(t, getErr)
+	require.NotNil(t, ho)
+	ho.State = domain.StateIdentityCreated
+	require.NoError(t, handoffs.Update(context.Background(), ho))
+
+	// Second POST: fast path finds StateIdentityCreated + same email → returns that state.
+	// Handler switch hits the default branch → 202 Accepted.
+	w = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/trial", trialBody(t, nil))
+	req.Header.Set("Content-Type", "application/json")
+	newRouter(h).ServeHTTP(w, req)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+}
+
+// TestHandlerChangeSlug_TenantPending_Returns202 covers the default branch in
+// ChangeSlug's switch (line 336). When I-1 fails during slug change the orchestrator
+// parks the handoff in StateTenantPending and the handler answers 202 Accepted.
+func TestHandlerChangeSlug_TenantPending_Returns202(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	clk := fixtures.NewFakeClock()
+	require.NoError(t, handoffs.Create(context.Background(), &domain.Handoff{
+		SignupID:       testSession().SignupID,
+		TenantID:       "tid-slug-pending",
+		State:          domain.StateSlugConflict,
+		Slug:           "acme",
+		CompanyName:    "Acme Corp",
+		Plan:           domain.PlanPro,
+		KeycloakUserID: "kc-001",
+		CreatedAt:      clk.Now(),
+		UpdatedAt:      clk.Now(),
+	}))
+	om := fixtures.NewFakeOrgMembership("tid")
+	om.I1Err = domain.NewError(domain.ErrDependencyUnavailable, "i1 down")
+	h := buildHandlers(
+		fixtures.NewFakeSessionStore(), handoffs,
+		fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		fixtures.NewFakeRealmProvisioner("kc"), om,
+		fixtures.NewFakeCatalog(),
+	)
+
+	body, _ := json.Marshal(map[string]string{"slug": "acme-new"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/"+testSession().SignupID+"/slug", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	newRouter(h).ServeHTTP(w, req)
+
+	// I-1 failure → StateTenantPending → handler default branch → 202 Accepted.
+	assert.Equal(t, http.StatusAccepted, w.Code)
+}

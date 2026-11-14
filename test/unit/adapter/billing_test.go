@@ -202,6 +202,17 @@ func TestBilling_AuthorizeAndCharge_NetworkError(t *testing.T) {
 	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
 }
 
+func TestBilling_AuthorizeAndCharge_UnparsableBaseURL(t *testing.T) {
+	// "http://bad host" is accepted by url.Parse but rejected by http.NewRequestWithContext,
+	// exercising the "failed to build billing request" ErrInternal path.
+	_, err := billingadapter.New("http://bad host", time.Second).
+		AuthorizeAndCharge(context.Background(), chargeReq())
+	require.Error(t, err)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrInternal, de.Cause)
+}
+
 func TestBilling_AuthorizeAndCharge_MissingSubscriptionID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
