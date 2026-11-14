@@ -56,10 +56,10 @@ type lockThenChangeStateStore struct {
 func (s *lockThenChangeStateStore) AcquireLock(ctx context.Context, id string) (string, bool, error) {
 	token, acquired, err := s.FakeHandoffStore.AcquireLock(ctx, id)
 	if acquired && err == nil {
-		h, getErr := s.FakeHandoffStore.Get(ctx, id)
+		h, getErr := s.Get(ctx, id)
 		if getErr == nil && h != nil {
 			h.State = domain.StateIdentityCreated
-			_ = s.FakeHandoffStore.Update(ctx, h)
+			_ = s.Update(ctx, h)
 		}
 	}
 	return token, acquired, err

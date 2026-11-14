@@ -1,6 +1,6 @@
 module github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2 v2.2.0
