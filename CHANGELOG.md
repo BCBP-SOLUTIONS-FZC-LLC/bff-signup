@@ -8,6 +8,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Billing HTTP adapter for Phase 1 paid signup (SGN-2, 2026-11-14)
+
+Commercial Domain HLD v0.43 retired Phase 1.5; paid signup is now required for Phase 1.
+
+- `internal/adapter/outbound/billing/client.go` — real HTTP adapter for `AuthorizeAndCharge` (POST `/api/v1/internal/subscriptions/authorize-and-charge`). Handles 201/200 (success), 402 (payment declined → `ErrDependencyUnavailable`), 409 `SUBSCRIPTION_ALREADY_EXISTS` (idempotent replay), 400 (BFF contract error), 5xx (dependency unavailable).
+- `cmd/server/wiring.go` — `buildBilling()` now wires the real adapter when `PAID_SIGNUP_ENABLED=true` and `BILLING_BASE_URL` are both set; stub remains active otherwise (the `/paid` route still returns 404 until enabled).
+- `deploy/helm/values.yaml` — added `PAID_SIGNUP_ENABLED: "false"`, `BILLING_BASE_URL: ""`, `BILLING_TIMEOUT_MS: "5000"` with activation note.
+- `.go-arch-lint.yml` — `billing` registered in the `adapters_outbound` component.
+- Metrics — `billing` added as a tracked dependency in both `bff_signup_dependency_call_duration_seconds` (Tier 3) and `platform_dependency_request_seconds` (Tier 1 Proposed).
+- 13 billing adapter unit tests covering all response paths; `TestStandard_Register_IsIdempotent` and `TestRateLimiter_DefensiveTTLFallback` integration test added.
+- Coverage raised from 98.0% to 98.7%.
+
+**Activation prerequisite:** SRE-3 (Core migration `000004`) must be deployed first. Billing LLD endpoint path and schema must be confirmed before setting `PAID_SIGNUP_ENABLED=true`.
+
 ### Changed — E2E suite runs in CI (2026-11-02)
 
 Review item from Sharmila on PR #2: the E2E suite was not part of CI because it needed a running service, Valkey and mocks started by hand.

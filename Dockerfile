@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ── Build stage ───────────────────────────────────────────────────────────────
-# golang:1.26.10-alpine — matches go.mod toolchain (go 1.26.10).
+# golang:1.26.11-alpine — matches go.mod toolchain (go 1.26.11).
 # Digest-pinned: run `make pin-base-images` to refresh.
-FROM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder
+FROM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS builder
 
 WORKDIR /build
 

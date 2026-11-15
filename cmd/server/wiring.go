@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/billing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/catalog"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/hasher"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/orgmembership"
@@ -22,10 +23,13 @@ import (
 )
 
 // buildBilling returns the BillingClient to use.
-// When PAID_SIGNUP_ENABLED=true and BILLING_BASE_URL is set, a real HTTP adapter
-// will be returned here once it is built (Phase 1.5, LLD §19). Until then, the
-// stub is used regardless — the /paid route returns 404 when the flag is false.
-func buildBilling(_ *config.Config) port.BillingClient {
+// When PAID_SIGNUP_ENABLED=true and BILLING_BASE_URL is set, the real HTTP adapter
+// is returned (SGN-2, LLD §19). Otherwise the stub is used and /paid returns 404.
+// Prerequisites before enabling: SRE-3 (Core migration 000004) must be deployed first.
+func buildBilling(cfg *config.Config) port.BillingClient {
+	if cfg.PaidSignupEnabled && cfg.BillingURL != "" {
+		return billing.New(cfg.BillingURL, cfg.BillingTimeout())
+	}
 	return port.BillingStub{}
 }
 

@@ -37,6 +37,13 @@ func ensureRegistered(t *testing.T) {
 	Register("test")
 }
 
+// TestStandard_Register_IsIdempotent covers the early-return guard in Register
+// (business.go:228-230): a second call after registerDone=true must be a no-op.
+func TestStandard_Register_IsIdempotent(t *testing.T) {
+	ensureRegistered(t)
+	Register("test") // second call: registerDone=true → early return, no panic
+}
+
 func TestStandard_AllCollectorsRegistered(t *testing.T) {
 	ensureRegistered(t)
 

@@ -51,6 +51,10 @@ env:
   TURNSTILE_TIMEOUT_MS: "300"
   REALM_PROVISIONER_BASE_URL: "http://iam-realm-provisioner.iam.svc.cluster.local:8080"
   ORG_MEMBERSHIP_BASE_URL: "http://iam-org-membership.iam.svc.cluster.local:8080"
+  # Phase 1 paid signup activation (SGN-2) — only after SRE-3 (Core migration 000004) is deployed
+  PAID_SIGNUP_ENABLED: "false"
+  BILLING_BASE_URL: ""           # set to Billing service cluster URL when enabling
+  BILLING_TIMEOUT_MS: "5000"
   CAPTCHA_EXPECTED_HOSTNAME: "signup.bcbpsolutions.com"
   TERMS_CURRENT_VERSION: "2026-09"
 

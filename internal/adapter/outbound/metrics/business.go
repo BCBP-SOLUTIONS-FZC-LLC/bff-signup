@@ -310,7 +310,7 @@ func registerServiceMetrics() {
 	// Authoritative alerting/SLO source until registry ratification (registry.go).
 	DependencyCallDurationSeconds = must(gincommon.NewHistogramVec(nil,
 		"bff_signup_dependency_call_duration_seconds",
-		"Wall time of synchronous calls to external dependencies (RP-1, I-1, eligibility, PUB-1, Turnstile, Catalog), by dependency and outcome. Authoritative until platform_dependency_request_seconds is ratified (registry.go). LLD §11.2.",
+		"Wall time of synchronous calls to external dependencies (RP-1, I-1, eligibility, PUB-1, Turnstile, Catalog, Billing), by dependency and outcome. Authoritative until platform_dependency_request_seconds is ratified (registry.go). LLD §11.2.",
 		[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3},
 		"dependency", "outcome"))
 
@@ -361,7 +361,7 @@ func prewarm() {
 	}
 
 	// DependencyCallDurationSeconds
-	for _, dep := range []string{"realm_provisioner", "org_membership", "turnstile", "catalog"} {
+	for _, dep := range []string{"realm_provisioner", "org_membership", "turnstile", "catalog", "billing"} {
 		for _, outcome := range []string{"success", "error"} {
 			DependencyCallDurationSeconds.WithLabelValues(dep, outcome)
 		}

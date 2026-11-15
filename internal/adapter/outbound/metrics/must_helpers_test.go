@@ -39,3 +39,12 @@ func TestMustShared_PanicsOnAnyOtherError(t *testing.T) {
 		mustShared(built, prometheus.AlreadyRegisteredError{ExistingCollector: prometheus.NewHistogram(prometheus.HistogramOpts{Name: "h", Help: "t"})})
 	})
 }
+
+// TestMustShared_ReusesHistogramVec covers the AlreadyRegisteredError success branch for
+// *prometheus.HistogramVec — the instantiation used by registerShared() in business.go.
+func TestMustShared_ReusesHistogramVec(t *testing.T) {
+	hv := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "reuse_hv_ok_coverage", Help: "test"}, nil)
+	err := prometheus.AlreadyRegisteredError{ExistingCollector: hv}
+	result := mustShared(hv, err)
+	assert.Same(t, hv, result, "mustShared must return the already-registered HistogramVec")
+}

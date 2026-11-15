@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// BillingClient is the port for the Billing Service (Phase 1.5, LLD §19).
+// BillingClient is the port for the Billing Service (SGN-2, LLD §19).
 // The real HTTP adapter is wired when PAID_SIGNUP_ENABLED=true; until then
 // BillingStub is used and the /paid route returns 404.
 type BillingClient interface {
