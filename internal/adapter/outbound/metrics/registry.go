@@ -63,10 +63,10 @@ var PlatformRegistry = []RegistryEntry{
 		ApprovedLabels:     []string{"dependency", "operation", "outcome"},
 		LabelValues: map[string][]string{
 			"dependency": {"realm_provisioner", "org_membership", "turnstile", "catalog", "billing"},
-			"operation":  {"provision_trial (RP-1), provision_direct (RP-2), provision_tenant (I-1), trial_eligibility (CR-4), slug_resolve (PUB-1), siteverify (Turnstile), plans (Catalog)"},
-			"outcome":    {"success", "error"}, // error = transport failure or 5xx
+			"operation":  {"provision_trial", "provision_direct", "provision_tenant", "trial_eligibility", "slug_resolve", "siteverify", "plans", "authorize_and_charge"}, // RP-1, RP-2, I-1, CR-4, PUB-1, Turnstile, Catalog, Billing B-I1
+			"outcome":    {"success", "error"},                                                                                                                            // error = transport failure or 5xx
 		},
-		Cardinality:      "Bounded — 5 peers × a handful of endpoints each × 2 outcomes; no request/session/tenant identifier is ever a label value.",
+		Cardinality:      "Bounded — 5 peers × 8 operations in total × 2 outcomes; no request/session/tenant identifier is ever a label value.",
 		AggregationNotes: "Error ratio per dependency: sum by (domain,service,environment,dependency) (rate(platform_dependency_request_seconds_count{outcome=\"error\"}[w])) / sum by (domain,service,environment,dependency) (rate(platform_dependency_request_seconds_count[w])). p99: histogram_quantile(0.99, sum by (le,domain,service,environment,dependency) (rate(platform_dependency_request_seconds_bucket[w]))).",
 		SupersedesTier3:  []string{"bff_signup_dependency_call_duration_seconds"},
 	},

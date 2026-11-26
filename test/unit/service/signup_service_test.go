@@ -311,3 +311,29 @@ func TestSubmit_SlugConflict_ReturnsSuggestions(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, domain.StateSlugConflict, result.State)
 }
+
+// A PUB-1 conflict leaves no Keycloak user, so SB-4 cannot fix it; a resubmit of
+// SB-2 with a new slug must go through (LLD §17.1).
+func TestSubmitTrial_PUB1Conflict_ResubmitWithNewSlugSucceeds(t *testing.T) {
+	handoffs := fixtures.NewFakeHandoffStore()
+	om := fixtures.NewFakeOrgMembership("tid")
+	om.SlugFreeErr = domain.NewError(domain.ErrSlugTaken, "taken")
+	rp := fixtures.NewFakeRealmProvisioner("kc")
+	svc := newSignupService(handoffs, fixtures.NewFakeRateLimiter(), &fixtures.FakeCaptchaVerifier{},
+		&fixtures.FakePasswordHasher{}, rp, om)
+	sess := &port.Session{SID: "sid", SignupID: "01JAB00000000000000000D1", CSRFHash: "h"}
+
+	_, err := svc.Submit(context.Background(), validInput(sess))
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrSlugTaken, de.Cause)
+
+	om.SlugFreeErr = nil
+	in := validInput(sess)
+	in.Slug = "acme-new"
+	res, err := svc.Submit(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateCompleted, res.State)
+	require.Len(t, rp.Calls, 1)
+	assert.Equal(t, "acme-new", rp.Calls[0].TenantSlug)
+}

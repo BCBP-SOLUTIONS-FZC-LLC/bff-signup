@@ -175,3 +175,30 @@ func TestVerify_FormEncoding(t *testing.T) {
 	assert.True(t, strings.Contains(received, "remoteip=10.0.0.1"))
 	assert.True(t, strings.Contains(received, "secret=test-secret"))
 }
+
+// Cloudflare's own fault is an outage (503), not the user's CAPTCHA failure.
+func TestVerify_CloudflareInternalErrorIsUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(siteverifyResponse{Success: false, ErrorCodes: []string{"internal-error"}})
+	}))
+	defer srv.Close()
+
+	err := newTestClient(srv, "").Verify(context.Background(), "tok", "1.2.3.4")
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
+}
+
+// The transport error (URL, dial details) must not reach the public 503 detail.
+func TestVerify_TransportErrorMessageIsFixed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	c := newTestClient(srv, "")
+	srv.Close()
+
+	err := c.Verify(context.Background(), "tok", "1.2.3.4")
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, "CAPTCHA provider unreachable", de.Message)
+	assert.NotContains(t, de.Message, "127.0.0.1")
+}

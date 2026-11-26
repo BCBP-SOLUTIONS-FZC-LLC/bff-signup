@@ -24,14 +24,14 @@ bff-signup {{ .Chart.Version }} deployed.
 {{ if not .Values.ingress.enabled -}}
 ℹ  ingress.enabled is false. The signup endpoints are not exposed externally.
    Set ingress.enabled=true and configure ingress.gateway.name to expose:
-     https://{{ .Values.publicHost }}/api/v1/signup
+     https://{{ .Values.env.PUBLIC_HOST }}/api/v1/signup
 
 {{ end -}}
 ━━ GO-LIVE CHECKLIST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   [ ] SRE: Istio mesh trust domain confirmed → bffCaller.istio.trustDomain in RP chart
   [ ] SRE: SNS filter for tenant-orgm-q includes TenantIdentityProvisioned
-  [ ] SRE: DNS, TLS, WAF, Envoy HTTPRoute for {{ .Values.publicHost }}
+  [ ] SRE: DNS, TLS, WAF, Envoy HTTPRoute for {{ .Values.env.PUBLIC_HOST }}
   [ ] Web/Growth lead: on-call rotation wired (primary + IAM escalation)
   See: docs/lld/signup-bff-action-tracker.md
 
@@ -40,6 +40,6 @@ bff-signup {{ .Chart.Version }} deployed.
   kubectl rollout status deployment/{{ include "bff-signup.fullname" . }} -n {{ .Release.Namespace }}
   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name=bff-signup
 
-  Readiness:  https://{{ .Values.publicHost }}/readyz
-  Session:    https://{{ .Values.publicHost }}/api/v1/signup/session
+  Readiness:  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "bff-signup.fullname" . }} 8080 && curl localhost:8080/readyz  (not routed publicly)
+  Session:    https://{{ .Values.env.PUBLIC_HOST }}/api/v1/signup/session
   Metrics:    (cluster-internal only) http://<pod-ip>:{{ .Values.service.metricsPort }}/metrics

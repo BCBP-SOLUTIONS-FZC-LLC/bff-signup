@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/tracing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -42,7 +43,7 @@ var _ port.OrgMembership = (*Client)(nil)
 func New(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: timeout, Transport: tracing.Transport("org_membership", true)},
 	}
 }
 
@@ -136,6 +137,10 @@ func (c *Client) CheckEligibility(ctx context.Context, emailHash string) error {
 			return domain.NewError(domain.ErrTrialNotEligible, "this email has already been used for a trial")
 		}
 		return domain.NewError(domain.ErrInternal, fmt.Sprintf("unexpected eligibility 409: %s", ome.ErrorCode))
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+		// A malformed hash or a rejected caller is a contract/config bug: retrying
+		// cannot help and it must not look like an outage (503).
+		return domain.NewError(domain.ErrInternal, fmt.Sprintf("eligibility rejected the request: %d", resp.StatusCode))
 	default:
 		return domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("eligibility service error: %d", resp.StatusCode))
 	}
@@ -178,8 +183,14 @@ func (c *Client) ProvisionTenant(ctx context.Context, req port.ProvisionTenantRe
 	case http.StatusConflict:
 		var ome omError
 		_ = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamBodyBytes)).Decode(&ome)
-		if ome.ErrorCode == "SLUG_ALREADY_TAKEN" {
+		switch ome.ErrorCode {
+		case "SLUG_ALREADY_TAKEN":
 			return nil, domain.NewError(domain.ErrSlugTaken, "slug is already taken by another tenant")
+		case "TRIAL_ALREADY_USED":
+			// A concurrent trial signup with the same email won CR-4's ledger race.
+			return nil, domain.NewError(domain.ErrTrialNotEligible, "this email has already been used for a trial")
+		case "TENANT_OFFBOARDED":
+			return nil, domain.NewError(domain.ErrInvalidState, "tenant has been offboarded — signup not allowed")
 		}
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("unexpected I-1 409: %s", ome.ErrorCode))
 

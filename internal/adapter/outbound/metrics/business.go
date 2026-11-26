@@ -37,8 +37,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 )
 
@@ -47,63 +45,66 @@ var (
 
 	// DependencyRequestSeconds (platform_dependency_request_seconds{
 	// dependency,operation,outcome}, Proposed) times synchronous calls to
-	// external services: RP-1, I-1, eligibility, PUB-1, Turnstile, Catalog.
+	// external services: RP-1, RP-2, I-1, eligibility, PUB-1, Turnstile,
+	// Catalog, Billing B-I1.
 	// Proposed — authoritative alerting source is bff_signup_dependency_call_
 	// duration_seconds (Tier 3 predecessor) until registry ratification.
-	DependencyRequestSeconds *prometheus.HistogramVec
+	DependencyRequestSeconds *gincommon.HistogramVec
 
 	// ── Tier 3 — bff_signup_* (unique to this service) ───────────────────
 
 	// FormStarted (bff_signup_form_started_total{mode}) counts SB-1 sessions
-	// successfully created. mode="trial" in Phase 1; "paid" in Phase 1.5.
+	// successfully created. SB-1 does not know the path yet, so mode is always "trial".
 	// LLD §11.2.
-	FormStarted *prometheus.CounterVec
+	FormStarted *gincommon.CounterVec
 
 	// FormSubmitted (bff_signup_form_submitted_total{mode}) counts SB-2
-	// requests received (before any processing — a baseline to compute
-	// funnel drop-off). LLD §11.2.
-	FormSubmitted *prometheus.CounterVec
+	// (mode=trial) and SB-5 (mode=paid) requests received (before any
+	// processing — a baseline to compute funnel drop-off). LLD §11.2.
+	FormSubmitted *gincommon.CounterVec
 
 	// ProvisioningSucceeded (bff_signup_provisioning_succeeded_total{mode,strategy})
 	// counts signups that reached state=completed. strategy is "inline" (I-1
-	// succeeded within the SB-2 request), "resume" (SB-3 poll completed it),
+	// succeeded within the SB-2/SB-5 request), "resume" (SB-3 poll completed it),
 	// or "slug_change" (SB-4 completed it). LLD §11.2.
 	// Note: label was renamed path→strategy because "path" is a prohibited label
 	// in the platform registry (unbounded cardinality risk for URL-like paths).
-	ProvisioningSucceeded *prometheus.CounterVec
+	ProvisioningSucceeded *gincommon.CounterVec
 
 	// ProvisioningFailed (bff_signup_provisioning_failed_total{mode,stage,reason})
 	// counts signups stuck in state=failed (15-min resume window exhausted).
 	// stage is one of: eligibility, realm_provisioner, org_membership.
 	// reason is one of: unavailable, contract_error, exhausted. LLD §11.2.
-	ProvisioningFailed *prometheus.CounterVec
+	ProvisioningFailed *gincommon.CounterVec
 
 	// RateLimited (bff_signup_rate_limited_total{scope}) counts requests
-	// rejected by rate limits. scope is: ip, email, session, poll. LLD §11.2.
-	RateLimited *prometheus.CounterVec
+	// rejected by rate limits (SB-1…SB-5). scope is: ip, email, session, poll. LLD §11.2.
+	RateLimited *gincommon.CounterVec
 
 	// CaptchaChallenged (bff_signup_captcha_challenged_total{result}) counts
 	// Turnstile siteverify calls. result is: pass, fail, error. LLD §11.2.
-	CaptchaChallenged *prometheus.CounterVec
+	CaptchaChallenged *gincommon.CounterVec
 
 	// HandoffResumed (bff_signup_handoff_resumed_total{trigger}) counts I-1
 	// retry attempts on an existing handoff. trigger is: poll (SB-3),
 	// resubmit (SB-2 on an existing session), slug_change (SB-4). LLD §11.2.
-	HandoffResumed *prometheus.CounterVec
+	HandoffResumed *gincommon.CounterVec
 
 	// DependencyCallDurationSeconds (bff_signup_dependency_call_duration_seconds
 	// {dependency,outcome}) is the Tier 3 predecessor of
 	// platform_dependency_request_seconds (Proposed — registry.go).
 	// Authoritative alerting/SLO source for dependency latency until the Tier 1
 	// entry is ratified. dependency: realm_provisioner, org_membership,
-	// turnstile, catalog. outcome: success, error. LLD §11.2.
-	DependencyCallDurationSeconds *prometheus.HistogramVec
+	// turnstile, catalog, billing. outcome: success, error. Buckets are the
+	// registry's dependency_request preset (up to 30 s), so Billing B-I1
+	// (p95 6 s, timeout 15 s) does not land in +Inf. LLD §11.2.
+	DependencyCallDurationSeconds *gincommon.HistogramVec
 
 	// passwordHashVec is the backing HistogramVec for PasswordHashDurationSeconds.
 	// No dynamic labels — WithLabelValues() is called with no args. Using Vec
 	// rather than a singleton histogram because gincommon.NewHistogramVec is the
 	// only available no-label histogram constructor in platform-gincommon v2.
-	passwordHashVec *prometheus.HistogramVec
+	passwordHashVec *gincommon.HistogramVec
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -170,7 +171,7 @@ func IncHandoffResumed(trigger string) {
 // ObserveDependencyCall records one synchronous call to a peer service on both
 // the authoritative Tier-3 bff_signup_dependency_call_duration_seconds and
 // the Proposed Tier-1 platform_dependency_request_seconds.
-// dependency: "realm_provisioner" | "org_membership" | "turnstile" | "catalog".
+// dependency: "realm_provisioner" | "org_membership" | "turnstile" | "catalog" | "billing".
 // operation: the client endpoint in snake_case (e.g. "provision_trial").
 // outcome: "success" | "error" (error = transport failure or 5xx).
 // resp may be nil when err is set.
@@ -236,22 +237,9 @@ func Register(_ string) {
 
 // registerShared builds Tier 1 platform_* collectors from the central registry.
 func registerShared() {
-	DependencyRequestSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "platform_dependency_request_seconds"))
-}
-
-// mustShared returns the collector gincommon built, or the existing one if
-// platform-events registered it first (same descriptors → reuse, not error).
-func mustShared[C prometheus.Collector](c C, err error) C {
-	if err == nil {
-		return c
-	}
-	var are prometheus.AlreadyRegisteredError
-	if errors.As(err, &are) {
-		if existing, ok := are.ExistingCollector.(C); ok {
-			return existing
-		}
-	}
-	panic("metrics: register shared platform collector: " + err.Error())
+	// No other platform library in this service registers it first, so a
+	// registration error is a programming error, as for Tier 3 collectors.
+	DependencyRequestSeconds = must(gincommon.NewSharedHistogramVec(nil, "platform_dependency_request_seconds"))
 }
 
 // must panics on a Tier 3 construction error — a wrong name, suffix or label
@@ -273,17 +261,17 @@ func must[C any](c C, err error) C {
 func registerServiceMetrics() {
 	FormStarted = must(gincommon.NewCounterVec(nil,
 		"bff_signup_form_started_total",
-		"SB-1 sessions successfully created, by mode (trial in Phase 1; paid in Phase 1.5). Baseline for signup funnel (LLD §11.2).",
+		"SB-1 sessions successfully created (mode is always trial: SB-1 precedes the path choice). Baseline for signup funnel (LLD §11.2).",
 		"mode"))
 
 	FormSubmitted = must(gincommon.NewCounterVec(nil,
 		"bff_signup_form_submitted_total",
-		"SB-2 requests received before any processing, by mode. Paired with bff_signup_provisioning_succeeded_total for funnel drop-off (LLD §11.2).",
+		"SB-2 (mode=trial) and SB-5 (mode=paid) requests received before any processing. Paired with bff_signup_provisioning_succeeded_total for funnel drop-off (LLD §11.2).",
 		"mode"))
 
 	ProvisioningSucceeded = must(gincommon.NewCounterVec(nil,
 		"bff_signup_provisioning_succeeded_total",
-		"Signups that reached state=completed, by mode and strategy: inline (I-1 succeeded within SB-2), resume (SB-3 poll completed it), slug_change (SB-4 completed it). LLD §11.2.",
+		"Signups that reached state=completed, by mode (trial|paid) and strategy: inline (I-1 succeeded within SB-2/SB-5), resume (SB-3 poll completed it), slug_change (SB-4 completed it). LLD §11.2.",
 		"mode", "strategy"))
 
 	ProvisioningFailed = must(gincommon.NewCounterVec(nil,
@@ -293,7 +281,7 @@ func registerServiceMetrics() {
 
 	RateLimited = must(gincommon.NewCounterVec(nil,
 		"bff_signup_rate_limited_total",
-		"Requests rejected by abuse controls, by scope: ip (3/h per IP, SB-2), email (5/24h, SB-2), session (20/h per IP, SB-1), poll (60/min per session, SB-3). LLD §11.2.",
+		"Requests rejected by abuse controls, by scope: ip (RATE_SIGNUPS_PER_IP_PER_HOUR, SB-2/SB-5), email (RATE_ATTEMPTS_PER_EMAIL_PER_DAY, SB-2/SB-5), session (RATE_SESSIONS_PER_IP_PER_HOUR, SB-1), poll (RATE_POLLS_PER_SESSION_PER_MIN, SB-3). LLD §11.2.",
 		"scope"))
 
 	CaptchaChallenged = must(gincommon.NewCounterVec(nil,
@@ -311,7 +299,9 @@ func registerServiceMetrics() {
 	DependencyCallDurationSeconds = must(gincommon.NewHistogramVec(nil,
 		"bff_signup_dependency_call_duration_seconds",
 		"Wall time of synchronous calls to external dependencies (RP-1, I-1, eligibility, PUB-1, Turnstile, Catalog, Billing), by dependency and outcome. Authoritative until platform_dependency_request_seconds is ratified (registry.go). LLD §11.2.",
-		[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3},
+		// Same boundaries as the registry's dependency_request preset used by
+		// platform_dependency_request_seconds, so the two stay comparable.
+		[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
 		"dependency", "outcome"))
 
 	passwordHashVec = must(gincommon.NewHistogramVec(nil,

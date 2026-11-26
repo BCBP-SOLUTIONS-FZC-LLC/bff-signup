@@ -149,3 +149,21 @@ func TestHandoffStore_ReleaseLock_WrongToken_IsNoOp(t *testing.T) {
 
 	_ = store.ReleaseLock(ctx, signupID, token)
 }
+
+// The lock must outlive the longest request holding it (config.HandoffLockTTL).
+func TestHandoffStore_WithLockTTL(t *testing.T) {
+	store, mr := newTestHandoffStore(t)
+	ctx := context.Background()
+
+	_, ok, err := store.WithLockTTL(35*time.Second).AcquireLock(ctx, "sid-ttl")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 35*time.Second, mr.TTL("sbff:lock:sid-ttl"))
+
+	mr.FastForward(20 * time.Second) // past the old 15 s
+	_, ok, err = store.AcquireLock(ctx, "sid-ttl")
+	require.NoError(t, err)
+	assert.False(t, ok, "a paid request is still running: no second holder")
+
+	assert.Same(t, store, store.WithLockTTL(0), "non-positive keeps the current TTL")
+}

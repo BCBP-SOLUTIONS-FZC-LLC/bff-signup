@@ -66,6 +66,11 @@ func TestOrchestrator_PUB1SlugConflict(t *testing.T) {
 	assert.NotEmpty(t, result.SlugSuggestions)
 	// RP-1 must NOT have been called (slug conflict stopped provisioning before it)
 	assert.Empty(t, rp.Calls)
+	// No Keycloak user exists, so the handoff stays allocated (SB-4 could not
+	// apply a new slug); the browser resubmits SB-2 with the new slug.
+	got, _ := handoffs.Get(context.Background(), h.SignupID)
+	require.NotNil(t, got)
+	assert.Equal(t, domain.StateAllocated, got.State)
 }
 
 func TestOrchestrator_RP1EmailUnavailable(t *testing.T) {

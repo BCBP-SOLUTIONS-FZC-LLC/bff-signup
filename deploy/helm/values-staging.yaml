@@ -11,3 +11,10 @@ existingSecret: "bff-signup-staging-secrets"
 
 networkPolicy:
   enabled: true
+
+# Caller identity at L7 (mTLS principal) — LLD §10.1, BFF-1.
+istio:
+  authorizationPolicy:
+    enabled: true
+serviceEntry:
+  enabled: true   # REGISTRY_ONLY — Turnstile must be explicitly allowed

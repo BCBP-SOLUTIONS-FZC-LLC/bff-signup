@@ -1,11 +1,20 @@
-# Prometheus Adapter ConfigMap — maps Prometheus metrics to the Custom Metrics API
-# so the HPA can scale on signup_bff_request rate (CPU-bound PBKDF2 hashing, LLD §13.1).
+# Prometheus Adapter ConfigMap — exposes bff-signup's per-pod request rate on the
+# Custom Metrics API as platform_http_requests_per_second.
+#
+# Not used for scaling today: the HPA (deploy/helm/templates/hpa.yaml) is
+# CPU-only by design (LLD §13.1, G-9 — PBKDF2 hashing is CPU-bound). This rule
+# exists so a request-rate HPA metric can be added without a new adapter rule.
+#
+# metric_status: proposed — platform_http_requests_total (platform-gincommon's
+# HTTP server counter) is still Proposed in the Platform Observability Registry.
+# An HPA that starts using this metric must carry the annotation
+# observability.platform/metric-status: proposed (same as iam-org-membership).
 #
 # Deploy into the namespace where prometheus-adapter runs (typically observability).
 # Merge with any existing prometheus-adapter ConfigMap rather than replacing it.
 #
 # After applying, verify:
-#   kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq '.resources[].name' | grep rps
+#   kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq '.resources[].name' | grep per_second
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,14 +29,13 @@ metadata:
 data:
   config.yaml: |
     rules:
-      - seriesQuery: 'signup_bff_request_duration_seconds_count{namespace!="",pod!=""}'
+      - seriesQuery: 'platform_http_requests_total{service="bff-signup",namespace!="",pod!=""}'
         resources:
           overrides:
             namespace: {resource: "namespace"}
             pod: {resource: "pod"}
         name:
-          matches: "signup_bff_request_duration_seconds_count"
-          as: "signup_bff_requests_per_second"
+          matches: "^(.*)_total$"
+          as: "${1}_per_second"
         metricsQuery: |
-          sum(rate(signup_bff_request_duration_seconds_count{<<.LabelMatchers>>}[2m]))
-          by (<<.GroupBy>>)
+          sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)

@@ -32,18 +32,20 @@ type Config struct {
 	RealmProvisionerURL string
 	OrgMembershipURL    string
 	CatalogURL          string
-	BillingURL          string // Phase 1.5 (LLD §19): empty until Billing service is built
+	BillingURL          string // Billing B-I1 base URL (LLD §19.5); required when PAID_SIGNUP_ENABLED=true
 
-	// Phase 1.5 feature flag (LLD §19)
+	// Direct paid signup flag (LLD §19.5): stays false until Billing go-live step 4
 	PaidSignupEnabled bool // PAID_SIGNUP_ENABLED=true enables POST /paid and the Billing client
 
 	// Timeouts
-	RPTimeoutMs          int
-	I1TimeoutMs          int
-	EligibilityTimeoutMs int
-	TurnstileTimeoutMs   int
-	RequestDeadlineMs    int
-	BillingTimeoutMs     int // Phase 1.5 (LLD §19): Billing call timeout
+	RPTimeoutMs           int // RP-1 call timeout (RP publishes p95 ≤ 1.5 s)
+	RP2TimeoutMs          int // RP-2 call timeout (RP publishes p95 ≤ 4 s: realm clone, OIDC clients, admin user)
+	I1TimeoutMs           int
+	EligibilityTimeoutMs  int
+	TurnstileTimeoutMs    int
+	RequestDeadlineMs     int
+	BillingTimeoutMs      int // Billing B-I1 call timeout; >= 15000 when paid signup is on (BL-OQ-8: p99 12 s)
+	PaidRequestDeadlineMs int // SB-5 request deadline: covers B-I1 + RP-2 + I-1 (BL-OQ-8)
 
 	// Rate limits (configurable, LLD §12)
 	SignupsPerIPPerHour    int
@@ -91,12 +93,14 @@ func Load() (*Config, error) {
 		BillingURL:          envOr("BILLING_BASE_URL", ""),
 		PaidSignupEnabled:   envBool("PAID_SIGNUP_ENABLED"),
 
-		RPTimeoutMs:          envInt("RP_TIMEOUT_MS", 900),
-		I1TimeoutMs:          envInt("I1_TIMEOUT_MS", 300),
-		EligibilityTimeoutMs: envInt("ELIGIBILITY_TIMEOUT_MS", 150),
-		TurnstileTimeoutMs:   envInt("TURNSTILE_TIMEOUT_MS", 300),
-		RequestDeadlineMs:    envInt("REQUEST_DEADLINE_MS", 2500),
-		BillingTimeoutMs:     envInt("BILLING_TIMEOUT_MS", 5000),
+		RPTimeoutMs:           envInt("RP_TIMEOUT_MS", 2000),
+		RP2TimeoutMs:          envInt("RP2_TIMEOUT_MS", 8000),
+		I1TimeoutMs:           envInt("I1_TIMEOUT_MS", 300),
+		EligibilityTimeoutMs:  envInt("ELIGIBILITY_TIMEOUT_MS", 150),
+		TurnstileTimeoutMs:    envInt("TURNSTILE_TIMEOUT_MS", 300),
+		RequestDeadlineMs:     envInt("REQUEST_DEADLINE_MS", 5000),
+		BillingTimeoutMs:      envInt("BILLING_TIMEOUT_MS", MinBillingTimeoutMs),
+		PaidRequestDeadlineMs: envInt("PAID_REQUEST_DEADLINE_MS", 30000),
 
 		SignupsPerIPPerHour:    envInt("RATE_SIGNUPS_PER_IP_PER_HOUR", 3),
 		AttemptsPerEmailPerDay: envInt("RATE_ATTEMPTS_PER_EMAIL_PER_DAY", 5),
@@ -150,6 +154,18 @@ func (c *Config) Validate() error {
 	if c.PaidSignupEnabled && c.BillingURL == "" {
 		return fmt.Errorf("BILLING_BASE_URL must not be empty when PAID_SIGNUP_ENABLED=true")
 	}
+	if c.PaidSignupEnabled {
+		if c.BillingTimeoutMs < MinBillingTimeoutMs {
+			return fmt.Errorf("BILLING_TIMEOUT_MS must be >= %d when PAID_SIGNUP_ENABLED=true (got %d)", MinBillingTimeoutMs, c.BillingTimeoutMs)
+		}
+		if c.RP2TimeoutMs < 100 {
+			return fmt.Errorf("RP2_TIMEOUT_MS must be >= 100ms (got %d)", c.RP2TimeoutMs)
+		}
+		// SB-5 chain: B-I1 → PUB-1 (I1 timeout) → RP-2 → I-1.
+		if need := c.BillingTimeoutMs + c.I1TimeoutMs + c.RP2TimeoutMs + c.I1TimeoutMs; c.PaidRequestDeadlineMs < need {
+			return fmt.Errorf("PAID_REQUEST_DEADLINE_MS must be >= BILLING_TIMEOUT_MS + RP2_TIMEOUT_MS + 2*I1_TIMEOUT_MS (%d) (got %d)", need, c.PaidRequestDeadlineMs)
+		}
+	}
 	if c.CaptchaSkip && c.AppEnv != "dev" && c.AppEnv != "test" && c.AppEnv != "local" {
 		return fmt.Errorf("CAPTCHA_SKIP must not be enabled outside dev/test/local environments (APP_ENV=%s)", c.AppEnv)
 	}
@@ -164,6 +180,10 @@ func (c *Config) Validate() error {
 	}
 	if c.RequestDeadlineMs < 500 {
 		return fmt.Errorf("REQUEST_DEADLINE_MS must be >= 500ms (got %d)", c.RequestDeadlineMs)
+	}
+	// SB-2 chain without retries: eligibility → PUB-1 (I1 timeout) → RP-1 → I-1.
+	if need := c.EligibilityTimeoutMs + c.I1TimeoutMs + c.RPTimeoutMs + c.I1TimeoutMs; c.RequestDeadlineMs < need {
+		return fmt.Errorf("REQUEST_DEADLINE_MS must be >= ELIGIBILITY_TIMEOUT_MS + RP_TIMEOUT_MS + 2*I1_TIMEOUT_MS (%d) (got %d)", need, c.RequestDeadlineMs)
 	}
 	if c.SessionTTLSeconds < 300 {
 		return fmt.Errorf("SESSION_TTL_SECONDS must be >= 300 seconds (got %d)", c.SessionTTLSeconds)
@@ -191,12 +211,47 @@ func (c *Config) SlugRules() domain.SlugRules {
 }
 
 // Timeout helpers
-func (c *Config) RPTimeout() time.Duration          { return ms(c.RPTimeoutMs) }
-func (c *Config) I1Timeout() time.Duration          { return ms(c.I1TimeoutMs) }
-func (c *Config) EligibilityTimeout() time.Duration { return ms(c.EligibilityTimeoutMs) }
-func (c *Config) TurnstileTimeout() time.Duration   { return ms(c.TurnstileTimeoutMs) }
-func (c *Config) RequestDeadline() time.Duration    { return ms(c.RequestDeadlineMs) }
-func (c *Config) BillingTimeout() time.Duration     { return ms(c.BillingTimeoutMs) }
+func (c *Config) RPTimeout() time.Duration  { return ms(c.RPTimeoutMs) }
+func (c *Config) RP2Timeout() time.Duration { return ms(c.RP2TimeoutMs) }
+
+// HandoffLockTTL is how long the per-signup handoff lock lives. It must outlast
+// the longest request that holds it (SB-5 waits on Billing and RP-2), or a
+// second request could proceed mid-payment: longest deadline + 5 s, at least 15 s.
+func (c *Config) HandoffLockTTL() time.Duration {
+	ttl := c.MaxRequestDeadline() + 5*time.Second
+	if ttl < 15*time.Second {
+		ttl = 15 * time.Second
+	}
+	return ttl
+}
+func (c *Config) I1Timeout() time.Duration           { return ms(c.I1TimeoutMs) }
+func (c *Config) EligibilityTimeout() time.Duration  { return ms(c.EligibilityTimeoutMs) }
+func (c *Config) TurnstileTimeout() time.Duration    { return ms(c.TurnstileTimeoutMs) }
+func (c *Config) RequestDeadline() time.Duration     { return ms(c.RequestDeadlineMs) }
+func (c *Config) BillingTimeout() time.Duration      { return ms(c.BillingTimeoutMs) }
+func (c *Config) PaidRequestDeadline() time.Duration { return ms(c.PaidRequestDeadlineMs) }
+
+// MinBillingTimeoutMs is the lowest BILLING_TIMEOUT_MS accepted with paid signup
+// on. Billing B-I1 makes two to four provider calls: p95 6 s, p99 12 s (BL-OQ-8).
+const MinBillingTimeoutMs = 15000
+
+// MaxRequestDeadline is the longest handler deadline in use: REQUEST_DEADLINE_MS,
+// or PAID_REQUEST_DEADLINE_MS when paid signup is on and it is longer. It is
+// gincommon's outer RequestTimeout: an outer deadline shorter than SB-5's would
+// cut SB-5 off, because each handler's deadline derives from the request context.
+func (c *Config) MaxRequestDeadline() time.Duration {
+	longest := c.RequestDeadlineMs
+	if c.PaidSignupEnabled && c.PaidRequestDeadlineMs > longest {
+		longest = c.PaidRequestDeadlineMs
+	}
+	return ms(longest)
+}
+
+// ServerWriteTimeout is the API server's WriteTimeout: the longest handler
+// deadline plus 500 ms to write the response.
+func (c *Config) ServerWriteTimeout() time.Duration {
+	return c.MaxRequestDeadline() + 500*time.Millisecond
+}
 
 func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 

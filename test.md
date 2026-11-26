@@ -142,17 +142,21 @@ curl -si "$BASE/readyz"    # 200 OK — Valkey reachable; 503 — Valkey down
 
 ## Common error shapes
 
-All errors follow the `gincommon.ErrorResponse` envelope:
+All errors are RFC 9457 problem details (`Content-Type: application/problem+json`), written by platform-gincommon. Error-specific fields (`signup_id`, `suggestions`, `retry_after_seconds`, `decline_reason`, …) are top-level members:
 ```json
-{ "error": "<code>", "message": "...", "request_id": "...", "details": { ... } }
+{ "type": "…", "title": "Conflict", "status": 409, "detail": "…", "errorCode": "SLUG_TAKEN", "traceId": "…",
+  "signup_id": "<ulid>", "suggestions": ["acme-2"] }
 ```
 
-| Code | Meaning |
+| `errorCode` | Meaning |
 |---|---|
-| `validation_failed` | Field validation error |
-| `captcha_failed` | CAPTCHA verification failed |
-| `trial_not_eligible` | Email already used for a trial |
-| `slug_taken` | Slug already taken by another tenant |
-| `rate_limited` | Too many requests from this IP or email |
-| `dependency_unavailable` | RP / O&M / Valkey temporarily unreachable |
-| `internal_error` | Unexpected error — check logs |
+| `VALIDATION_FAILED` | Field validation error |
+| `CAPTCHA_FAILED` | CAPTCHA verification failed |
+| `TRIAL_NOT_ELIGIBLE` | Email already used for a trial |
+| `SLUG_TAKEN` | Slug already taken by another tenant |
+| `RATE_LIMITED` | Too many requests from this IP or email |
+| `DEPENDENCY_UNAVAILABLE` | RP / O&M / Billing / Valkey temporarily unreachable |
+| `REQUEST_TIMEOUT` | 503 written by gincommon when the request deadline expires |
+| `INTERNAL_ERROR` | Unexpected error — check logs |
+
+The full list is in README "Error codes" and LLD §17.1.

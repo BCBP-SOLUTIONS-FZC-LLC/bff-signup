@@ -35,11 +35,14 @@ components:
   middleware:
     in: internal/adapter/inbound/http/middleware
 
-  # observability: instrumentation only. Nil-safe helpers mean callers (service,
-  # adapters_outbound) import this directly — same pattern as iam-org-membership.
-  # Collectors are nil until metrics.Register() runs, so unit tests are safe.
+  # observability: instrumentation only, built on platform-gincommon. Nil-safe
+  # helpers mean callers (service, adapters_outbound) import this directly — same
+  # pattern as iam-org-membership. Collectors are nil until metrics.Register()
+  # runs, and tracing uses gincommon's tracer, so unit tests are safe.
   observability:
-    in: internal/adapter/outbound/metrics
+    in:
+      - internal/adapter/outbound/metrics
+      - internal/adapter/outbound/tracing
 
   adapters_inbound:
     in:

@@ -20,6 +20,8 @@ REGISTRY_GO="internal/adapter/outbound/metrics/registry.go"
 RULE_FILES=(
   deploy/monitoring/app-alerts.yml
   deploy/monitoring/slo-rules.yml
+  deploy/helm/templates/prometheusrule.yaml
+  deploy/monitoring/prometheus-adapter-rule.yaml
 )
 
 if [ ! -f "$REGISTRY_GO" ]; then

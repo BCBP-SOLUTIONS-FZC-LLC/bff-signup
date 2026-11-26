@@ -1,23 +1,30 @@
 stateDiagram-v2
-    [*] --> allocated : SB-2 passes CAPTCHA + rate limit + validation
+    [*] --> allocated : SB-2 passes CAPTCHA, rate limit, validation · tenant_id allocated
+    [*] --> payment_pending : SB-5 passes CAPTCHA, rate limit, validation · tenant_id allocated
 
-    allocated --> rejected : eligibility 409 TRIAL_ALREADY_USED\nor RP-1 409 EMAIL_ALREADY_REGISTERED
-    allocated --> allocated : RP-1 5xx after retries (503 to user; resubmit)
-    allocated --> identity_created : RP-1 201 {keycloak_user_id}
+    %% Trial path (SB-2)
+    allocated --> allocated : eligibility / RP-1 5xx or timeout after one retry (503); PUB-1 slug taken (409, no Keycloak user; resubmit with a new slug)
+    allocated --> identity_created : RP-1 201
+    allocated --> [*] : eligibility 409 TRIAL_ALREADY_USED / RP-1 409 EMAIL_ALREADY_REGISTERED / resubmit with other details (handoff deleted)
 
+    %% Paid path (SB-5, §19)
+    payment_pending --> payment_pending : B-I1 timeout / 500-504 / REQUEST_IN_PROGRESS (503 + Retry-After), 409 SUBSCRIPTION_ALREADY_EXISTS or an unexpected reply (500)
+    payment_pending --> payment_action_required : B-I1 402 PAYMENT_ACTION_REQUIRED (202 to browser)
+    payment_pending --> payment_confirmed : B-I1 201 / 200 replay
+    payment_action_required --> payment_action_required : re-POST; still pending, timeout or 5xx
+    payment_action_required --> payment_confirmed : re-POST after 3-D Secure; B-I1 201
+    payment_pending --> [*] : B-I1 402 PAYMENT_DECLINED / 410 CHARGE_EXPIRED / 422 PRICE_NOT_AVAILABLE (handoff deleted)
+    payment_action_required --> [*] : B-I1 402 PAYMENT_DECLINED / 410 CHARGE_EXPIRED (handoff deleted)
+    payment_confirmed --> payment_confirmed : PUB-1 / RP-2 slug taken (409) or RP-2 error; resubmit skips Billing (details frozen once RP-2 was called)
+    payment_confirmed --> identity_created : RP-2 201
+
+    %% Shared I-1 path
     identity_created --> completed : I-1 201/200
-    identity_created --> tenant_pending : I-1 5xx/timeout after 2 retries
+    identity_created --> tenant_pending : I-1 5xx/timeout after 2 inline retries
     identity_created --> slug_conflict : I-1 409 SLUG_ALREADY_TAKEN
-
     tenant_pending --> completed : SB-3 resume succeeds
-    tenant_pending --> failed : 15 min exhausted (~40 polls)
-
+    tenant_pending --> failed : 15 min exhausted
     slug_conflict --> identity_created : SB-4 new slug (max 5 attempts)
 
     completed --> [*] : TTL 10 min
-    rejected --> [*]
-    failed --> [*] : TTL (backstop may still recover via TenantIdentityProvisioned)
-
-    note right of tenant_pending
-        O&M backstop fires when\nbrowser abandons:\nTenantIdentityProvisioned\n→ tenant-orgm-q consumer
-    end note
+    failed --> [*] : TTL 30 min

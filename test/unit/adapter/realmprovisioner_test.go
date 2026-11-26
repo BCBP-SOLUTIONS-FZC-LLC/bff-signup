@@ -217,7 +217,7 @@ func TestRP_ProvisionDirect_OperationInProgress(t *testing.T) {
 	require.Error(t, err)
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, domain.ErrInvalidState, de.Cause)
+	assert.Equal(t, domain.ErrOperationInProgress, de.Cause, "retry with the same key")
 }
 
 func TestRP_ProvisionDirect_RealmAlreadyDedicated(t *testing.T) {
@@ -233,8 +233,8 @@ func TestRP_ProvisionDirect_RealmAlreadyDedicated(t *testing.T) {
 	require.Error(t, err)
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, domain.ErrInvalidState, de.Cause)
-	assert.Contains(t, de.Message, "dedicated")
+	assert.Equal(t, domain.ErrSlugTaken, de.Cause, "realm tenant-<slug> exists: a slug conflict")
+	assert.Contains(t, de.Message, "realm")
 }
 
 func TestRP_ProvisionDirect_TenantOffboarded(t *testing.T) {
@@ -447,4 +447,24 @@ func TestRP_ProvisionTrial_UnexpectedStatus(t *testing.T) {
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, domain.ErrInternal, de.Cause)
+}
+
+// RP-2 has its own, longer timeout (RP2_TIMEOUT_MS): RP-2 p95 is 4 s against RP-1's 1.5 s.
+func TestRP_ProvisionDirect_UsesDirectTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"tenant_id": "t", "keycloak_user_id": "kc", "email_verification_sent": false})
+	}))
+	defer srv.Close()
+
+	c := realmprovisioner.New(srv.URL, 50*time.Millisecond) // RP-1 budget would time out
+	_, err := c.ProvisionDirect(context.Background(), port.ProvisionDirectRequest{TenantID: "t"}, "k")
+	require.Error(t, err, "without WithDirectTimeout RP-2 shares the short RP-1 timeout")
+
+	resp, err := c.WithDirectTimeout(time.Second).ProvisionDirect(context.Background(), port.ProvisionDirectRequest{TenantID: "t"}, "k")
+	require.NoError(t, err)
+	require.NotNil(t, resp.EmailVerificationSent)
+	assert.False(t, *resp.EmailVerificationSent)
 }

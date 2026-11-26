@@ -32,7 +32,9 @@ func NewClient(addr string) *redis.Client {
 	if opts.WriteTimeout == 0 {
 		opts.WriteTimeout = 50 * time.Millisecond
 	}
-	return redis.NewClient(opts)
+	rdb := redis.NewClient(opts)
+	rdb.AddHook(tracingHook{}) // a client span per command, via platform-gincommon (tracing.go)
+	return rdb
 }
 
 // runOp executes fn under a 50 ms deadline, retrying once on transient errors

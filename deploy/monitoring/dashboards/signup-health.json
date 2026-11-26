@@ -1,8 +1,372 @@
 {
   "title": "bff-signup — Signup Health",
-  "description": "Signup funnel, provisioning success rate, CAPTCHA, rate limiting, and SLO burn.",
+  "description": "Signup funnel, SLOs, provisioning failures, dependency latency and errors (incl. Billing), CAPTCHA, rate limiting. Metrics: docs/observability/metric-registry.md.",
   "schemaVersion": 36,
-  "version": 1,
-  "tags": ["bff", "bff-signup", "signup"],
-  "panels": []
+  "version": 2,
+  "tags": [
+    "bff",
+    "bff-signup",
+    "signup"
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Data source"
+      },
+      {
+        "name": "environment",
+        "type": "query",
+        "label": "Environment",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(platform_build_info{domain=\"bff\", service=\"bff-signup\"}, environment)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Signup funnel (per second)",
+      "description": "SB-1 sessions, SB-2/SB-5 submissions, completed signups. Tier 3.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (mode) (rate(bff_signup_form_started_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "started {{mode}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (mode) (rate(bff_signup_form_submitted_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "submitted {{mode}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (mode) (rate(bff_signup_provisioning_succeeded_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "completed {{mode}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "SLO-1 signup error ratio (5xx, POST /trial + /paid)",
+      "description": "Recording rules from slo-rules.yml. Target ≤ 0.1%. Source platform_http_requests_total (metric_status: proposed).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "bff:signup_error_ratio:rate_5m{environment=\"$environment\"}",
+          "legendFormat": "5m"
+        },
+        {
+          "refId": "B",
+          "expr": "bff:signup_error_ratio:rate_1h{environment=\"$environment\"}",
+          "legendFormat": "1h"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "SLO-2 provisioning success (1h)",
+      "description": "Target ≥ 99%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "bff:provisioning_success_ratio:rate_1h{environment=\"$environment\"}",
+          "legendFormat": "completed / submitted"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Provisioning failures by stage / reason",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (mode, stage, reason) (increase(bff_signup_provisioning_failed_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[15m]))",
+          "legendFormat": "{{mode}} {{stage}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Dependency latency p95",
+      "description": "Tier 3, authoritative until platform_dependency_request_seconds is ratified. Billing B-I1 p95 ≈ 6 s, timeout 15 s.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, dependency) (rate(bff_signup_dependency_call_duration_seconds_bucket{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m])))",
+          "legendFormat": "{{dependency}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Dependency error ratio",
+      "description": "Transport errors and 5xx per dependency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (dependency) (rate(bff_signup_dependency_call_duration_seconds_count{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\", outcome=\"error\"}[5m])) / clamp_min(sum by (dependency) (rate(bff_signup_dependency_call_duration_seconds_count{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m])), 0.001)",
+          "legendFormat": "{{dependency}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "CAPTCHA results",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(bff_signup_captcha_challenged_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Rate-limited requests",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (scope) (rate(bff_signup_rate_limited_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{scope}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Handoff resumes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (trigger) (rate(bff_signup_handoff_resumed_total{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m]))",
+          "legendFormat": "{{trigger}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "PBKDF2 hash time p95",
+      "description": "CPU cost per signup; drives HPA sizing (LLD §13.2).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bff_signup_password_hash_duration_seconds_bucket{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Submit latency p99 (SLO: ≤ 1.5 s, trial no-retry path)",
+      "description": "platform_http_request_duration_seconds (platform-gincommon, metric_status: proposed). SB-5 includes Billing B-I1, so its latency is expected to be higher.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(platform_http_request_duration_seconds_bucket{domain=\"bff\", service=\"bff-signup\", environment=\"$environment\", method=\"POST\", route=~\"/api/v1/signup/(trial|paid)\"}[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    }
+  ]
 }

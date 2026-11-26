@@ -22,12 +22,24 @@ const (
 
 // HandoffStore implements port.HandoffStore using Valkey (LLD §4.1, §4.2).
 type HandoffStore struct {
-	rdb *redis.Client
+	rdb     *redis.Client
+	lockTTL time.Duration
 }
 
 var _ port.HandoffStore = (*HandoffStore)(nil)
 
-func NewHandoffStore(rdb *redis.Client) *HandoffStore { return &HandoffStore{rdb} }
+func NewHandoffStore(rdb *redis.Client) *HandoffStore {
+	return &HandoffStore{rdb: rdb, lockTTL: lockTTL}
+}
+
+// WithLockTTL sets the handoff lock lifetime. It must outlast the longest
+// request that holds the lock (config.HandoffLockTTL); non-positive keeps 15 s.
+func (s *HandoffStore) WithLockTTL(ttl time.Duration) *HandoffStore {
+	if ttl > 0 {
+		s.lockTTL = ttl
+	}
+	return s
+}
 
 func (s *HandoffStore) Create(ctx context.Context, h *domain.Handoff) error {
 	data, err := json.Marshal(h)
@@ -96,7 +108,7 @@ func (s *HandoffStore) AcquireLock(ctx context.Context, signupID string) (string
 	var ok bool
 	err := runOp(ctx, func(opCtx context.Context) error {
 		var e error
-		ok, e = s.rdb.SetNX(opCtx, lockKey(signupID), token, lockTTL).Result()
+		ok, e = s.rdb.SetNX(opCtx, lockKey(signupID), token, s.lockTTL).Result()
 		return e
 	})
 	if err != nil {

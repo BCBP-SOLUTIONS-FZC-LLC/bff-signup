@@ -12,13 +12,19 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/tracing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
 
 const (
-	plansPath           = "/api/v1/plans"
+	// plansPath is Catalog Admin's CAT-I2 internal route (iam-system callers).
+	plansPath           = "/api/v1/internal/plans"
 	maxCatalogBodyBytes = 64 * 1024
+	// systemPrincipal / nilTenant: the internal-caller identity the IAM services
+	// require (same values as the RP and O&M clients; there is no tenant yet).
+	systemPrincipal = "00000000-0000-0000-0000-0000000000a1"
+	nilTenant       = "00000000-0000-0000-0000-000000000000"
 )
 
 // Client implements port.Catalog with in-process 5-minute caching, singleflight
@@ -39,7 +45,7 @@ var _ port.Catalog = (*Client)(nil)
 
 func New(baseURL string, timeout, cacheTTL time.Duration, fallback []domain.PlanInfo) *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: timeout, Transport: tracing.Transport("catalog", true)},
 		baseURL:    baseURL,
 		fallback:   fallback,
 		cacheTTL:   cacheTTL,
@@ -83,8 +89,13 @@ func (c *Client) Plans(ctx context.Context) ([]domain.PlanInfo, error) {
 	return v.([]domain.PlanInfo), nil
 }
 
+// catalogResponse is CAT-I2's body: {plans: [...], record_versions: {...}}.
 type catalogResponse struct {
-	Plans []domain.PlanInfo `json:"plans"`
+	Plans []struct {
+		Code              string `json:"code"`
+		DisplayName       string `json:"display_name"`
+		TrialDurationDays int    `json:"trial_duration_days"`
+	} `json:"plans"`
 }
 
 func (c *Client) fetch(ctx context.Context) ([]domain.PlanInfo, error) {
@@ -92,6 +103,9 @@ func (c *Client) fetch(ctx context.Context) ([]domain.PlanInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("x-user-id", systemPrincipal)
+	req.Header.Set("x-tenant-roles", "iam-system")
+	req.Header.Set("x-tenant-id", nilTenant)
 	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	metrics.ObserveDependencyCall("catalog", "plans", time.Since(start), resp, err)
@@ -108,5 +122,17 @@ func (c *Client) fetch(ctx context.Context) ([]domain.PlanInfo, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCatalogBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("catalog decode: %w", err)
 	}
-	return out.Plans, nil
+	// Only the three sellable codes reach the form (SB-INV-8: never "trial").
+	plans := make([]domain.PlanInfo, 0, len(out.Plans))
+	for _, p := range out.Plans {
+		code := domain.Plan(p.Code)
+		if !domain.ValidPlan(code) {
+			continue
+		}
+		plans = append(plans, domain.PlanInfo{Code: code, Name: p.DisplayName, TrialDays: p.TrialDurationDays})
+	}
+	if len(plans) == 0 {
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "catalog returned no sellable plans")
+	}
+	return plans, nil
 }

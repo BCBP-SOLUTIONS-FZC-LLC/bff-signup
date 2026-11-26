@@ -28,7 +28,7 @@ type RouterConfig struct {
 	Valkey            port.HandoffStore // used as a pinger for /readyz
 	PublicHost        string
 	DocsEnabled       bool // serve Swagger UI (always on in dev; gated in prod)
-	PaidSignupEnabled bool // Phase 1.5 (LLD §19): enables POST /paid; false → 404
+	PaidSignupEnabled bool // SB-5 (LLD §19): enables POST /paid; false → 404
 }
 
 // NewRouter builds the Gin engine with all routes and middleware (LLD §5.2).
@@ -85,7 +85,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	// @Tags         infra
 	// @Produce      json
 	// @Success      200  {object}  map[string]string
-	// @Failure      503  {object}  ErrorResponse
+	// @Failure      503  {object}  map[string]string
 	// @Router       /readyz [get]
 	r.GET("/readyz", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -125,7 +125,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			cfg.Handlers.ChangeSlug,
 		)
 
-		// SB-5: direct paid signup (Phase 1.5, LLD §19)
+		// SB-5: direct paid signup (LLD §19)
 		// Returns 404 until PAID_SIGNUP_ENABLED=true so no card data reaches an unready handler.
 		if cfg.PaidSignupEnabled {
 			v1.POST("/paid",
@@ -175,6 +175,7 @@ func requireValidatedSession(svc *service.SessionService) gin.HandlerFunc {
 //   - Cache-Control: no-store — prevents caching of session/CSRF tokens
 //   - X-Content-Type-Options: nosniff — blocks MIME sniffing
 //   - X-Frame-Options: DENY — blocks clickjacking via iframe embedding
+//   - Strict-Transport-Security — HTTPS only for a year (TLS ends at the gateway)
 //   - Referrer-Policy: strict-origin-when-cross-origin — prevents signup URLs
 //     and CAPTCHA tokens from leaking to third-party origins via Referer header
 func noStoreHeaders() gin.HandlerFunc {
@@ -183,6 +184,9 @@ func noStoreHeaders() gin.HandlerFunc {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		// HSTS: the API is only ever served over HTTPS on PUBLIC_HOST (TLS ends at
+		// the gateway); browsers ignore the header on plain-HTTP local dev.
+		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		c.Next()
 	}
 }

@@ -647,6 +647,95 @@ func TestHandlerSubmitPaid_TenantPending_Returns202(t *testing.T) {
 	assert.Equal(t, "provisioning", resp["status"])
 }
 
+// BL-OQ-8: 402 PAYMENT_ACTION_REQUIRED → 202 with the 3-D Secure action.
+func TestHandlerSubmitPaid_PaymentActionRequired_Returns202WithAction(t *testing.T) {
+	billing := fixtures.NewFakeBillingClient("")
+	billing.Resp = &port.ChargeResponse{
+		Outcome:               port.ChargeActionRequired,
+		BillingSubscriptionID: "sub-3ds",
+		Action:                &port.PaymentAction{Type: "3ds", ClientSecret: "pi_123_secret_456"},
+		ExpiresAt:             "2026-11-26T12:30:00Z",
+	}
+	h := buildHandlersWithPaid(
+		fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
+		billing, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+	).WithPaidRequestDeadline(30 * time.Second)
+
+	w := servePaid(t, h)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, "payment_action_required", resp["status"])
+	assert.Equal(t, map[string]any{"type": "3ds", "client_secret": "pi_123_secret_456"}, resp["action"])
+	assert.Equal(t, "2026-11-26T12:30:00Z", resp["expires_at"])
+	assert.NotContains(t, resp, "billing_subscription_id")
+	// The session cookie slides so the 3-D Secure re-POST still has a session.
+	assert.Contains(t, w.Header().Get("Set-Cookie"), "sid-paid")
+}
+
+func TestHandlerSubmitPaid_BillingTerminalErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"declined", domain.NewError(domain.ErrPaymentDeclined, "declined").
+			WithDetails(map[string]any{"decline_reason": "card_declined"}), http.StatusUnprocessableEntity, "PAYMENT_DECLINED"},
+		{"expired", domain.NewError(domain.ErrChargeExpired, "start again"), http.StatusGone, "CHARGE_EXPIRED"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			billing := fixtures.NewFakeBillingClient("")
+			billing.Err = tc.err
+			h := buildHandlersWithPaid(
+				fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
+				billing, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+			)
+
+			w := servePaid(t, h)
+
+			assert.Equal(t, tc.status, w.Code)
+			var resp map[string]any
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+			assert.Equal(t, tc.code, resp["errorCode"])
+		})
+	}
+}
+
+func TestHandlerSubmitPaid_BillingInProgress_SetsRetryAfter(t *testing.T) {
+	billing := fixtures.NewFakeBillingClient("")
+	billing.Err = domain.NewError(domain.ErrDependencyUnavailable, "payment is still being processed").
+		WithDetails(map[string]any{"retry_after_seconds": 2})
+	h := buildHandlersWithPaid(
+		fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
+		billing, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+	).WithPaidRequestDeadline(0) // non-positive keeps the default
+
+	w := servePaid(t, h)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, "2", w.Header().Get("Retry-After"))
+}
+
+func servePaid(t *testing.T, h *inboundhttp.Handlers) *httptest.ResponseRecorder {
+	t.Helper()
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("client_ip", "1.2.3.4")
+		c.Set("sid", "sid-paid")
+		c.Set("session", testSession())
+		c.Next()
+	})
+	r.POST("/paid", h.SubmitPaid)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/paid", paidBody(t))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	return w
+}
+
 func TestHandlerSubmitPaid_NoSession_Returns401(t *testing.T) {
 	h := buildHandlersWithPaid(
 		fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
@@ -779,7 +868,7 @@ func TestHandlerGetStatus_TenantPending_ReturnsProvisioning(t *testing.T) {
 	assert.Equal(t, "provisioning", resp["status"])
 }
 
-func TestHandlerGetStatus_StateAllocated_ReturnsProvisioning(t *testing.T) {
+func TestHandlerGetStatus_StateAllocated_ReturnsResubmitAction(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	clk := fixtures.NewFakeClock()
 	require.NoError(t, handoffs.Create(context.Background(), &domain.Handoff{
@@ -807,8 +896,9 @@ func TestHandlerGetStatus_StateAllocated_ReturnsProvisioning(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]any
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	// StateAllocated hits default branch → "provisioning"
-	assert.Equal(t, "provisioning", resp["status"])
+	// allocated: nothing runs in the background — only a resubmit moves it on.
+	assert.Equal(t, "action_required", resp["status"])
+	assert.Equal(t, "resubmit", resp["action"])
 }
 
 func TestHandlerSubmitPaid_BadJSON(t *testing.T) {

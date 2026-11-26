@@ -81,11 +81,13 @@ func run() error {
 		BuildVersion: buildVersion,
 		Domain:       "bff",
 		Environment:  appEnv,
-		// RequestTimeout is the hard per-request deadline enforced by
+		// RequestTimeout is the outer per-request deadline enforced by
 		// gincommon's TimeoutMiddleware (innermost in ObservabilityMiddlewares).
-		// It matches the config value so metrics, the access log and the server
-		// span all record the same timeout the caller receives.
-		RequestTimeout: time.Duration(cfg.RequestDeadlineMs) * time.Millisecond,
+		// It is the longest handler deadline (PAID_REQUEST_DEADLINE_MS when paid
+		// signup is on, else REQUEST_DEADLINE_MS). Each handler then sets its own,
+		// shorter-or-equal deadline: SB-5 PAID_REQUEST_DEADLINE_MS, others
+		// REQUEST_DEADLINE_MS. A shorter outer value would cut SB-5 off.
+		RequestTimeout: cfg.MaxRequestDeadline(),
 	}
 
 	// Install gincommon's TracerProvider so every request gets a valid trace ID
@@ -123,7 +125,7 @@ func run() error {
 	// ── 4. Valkey store adapters (wiring.go) ─────────────────────────────────
 	// buildValkeyStores calls valkeystore.NewClient which sets tight timeouts
 	// (100ms dial / 50ms read+write) matching iam-org-membership's pattern.
-	sessionStore, handoffStore, rateLimiter, rdb := buildValkeyStores(cfg.ValkeyURL, time.Duration(cfg.SessionTTLSeconds)*time.Second)
+	sessionStore, handoffStore, rateLimiter, rdb := buildValkeyStores(cfg.ValkeyURL, time.Duration(cfg.SessionTTLSeconds)*time.Second, cfg.HandoffLockTTL())
 	defer func() { _ = rdb.Close() }()
 
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -145,7 +147,7 @@ func run() error {
 	}
 	passwordHasher := buildPasswordHasher(cfg)
 	catalogClient := buildCatalog(cfg)
-	billingClient := buildBilling(cfg) // Phase 1.5: stub unless PAID_SIGNUP_ENABLED=true
+	billingClient := buildBilling(cfg) // B-I1 adapter when PAID_SIGNUP_ENABLED=true, else BillingStub
 
 	// ── 6. Services ───────────────────────────────────────────────────────────
 	clk := port.RealClock{}
@@ -165,7 +167,7 @@ func run() error {
 		billingClient, rp, om, orchestrator, idgen, clk,
 		[]byte(cfg.HMACKey), cfg.ReservedSlugs, cfg.PasswordPolicy(),
 		cfg.CurrentTermsVersion,
-	)
+	).WithRateLimits(cfg.SignupsPerIPPerHour, cfg.AttemptsPerEmailPerDay)
 	statusSvc := service.NewStatusService(handoffStore, rateLimiter, orchestrator, clk, cfg.ReservedSlugs, cfg.PollsPerSessionPerMin)
 
 	// ── 8. HTTP handlers and router ───────────────────────────────────────────
@@ -179,7 +181,7 @@ func run() error {
 		cfg.CurrentTermsVersion,
 		cfg.SessionTTLSeconds,
 		log,
-	)
+	).WithPaidRequestDeadline(cfg.PaidRequestDeadline())
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
 		GinConfig:         ginCfg,
 		Handlers:          handlers,
@@ -214,7 +216,7 @@ func run() error {
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      time.Duration(cfg.RequestDeadlineMs+500) * time.Millisecond,
+		WriteTimeout:      cfg.ServerWriteTimeout(),
 		IdleTimeout:       60 * time.Second,
 	}
 

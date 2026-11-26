@@ -176,12 +176,13 @@ func TestSubmit_Resubmit_AllocatedSameDetails_StateChangedAfterLock(t *testing.T
 // forcing the full handleResubmit path instead of the early return at line 122.
 func TestSubmit_Resubmit_IdentityCreated_SameEmail_ViaFullPath(t *testing.T) {
 	inner := fixtures.NewFakeHandoffStore()
-	store := &errOnNthGetStore{FakeHandoffStore: inner, failAt: 2}
+	// First Submit reads 3 times: fast path (n=0), main (n=1), under-lock re-read (n=2).
+	store := &errOnNthGetStore{FakeHandoffStore: inner, failAt: 3}
 	svc := newSignupSvcWith(store)
 
 	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000F04", CSRFHash: "h"}
 
-	// First Submit (n=0,1) → creates handoff → StateCompleted.
+	// First Submit (n=0,1,2) → creates handoff → StateCompleted.
 	_, err := svc.Submit(context.Background(), validInput(sess))
 	require.NoError(t, err)
 
@@ -190,8 +191,8 @@ func TestSubmit_Resubmit_IdentityCreated_SameEmail_ViaFullPath(t *testing.T) {
 	h.State = domain.StateIdentityCreated
 	require.NoError(t, inner.Update(context.Background(), h))
 
-	// Second Submit: n=2 (fast-path Get fails → fast-path skipped),
-	// n=3 (main Get → StateIdentityCreated → handleResubmit → same email → line 359).
+	// Second Submit: n=3 (fast-path Get fails → fast-path skipped),
+	// n=4 (main Get → StateIdentityCreated → handleResubmit → same email).
 	result, err2 := svc.Submit(context.Background(), validInput(sess))
 	require.NoError(t, err2)
 	assert.Equal(t, domain.StateIdentityCreated, result.State)

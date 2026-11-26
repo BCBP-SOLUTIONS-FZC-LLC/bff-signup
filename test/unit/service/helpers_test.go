@@ -123,8 +123,8 @@ func (o *plainErrOrgMembership) ProvisionTenant(_ context.Context, _ port.Provis
 	return nil, o.plainErr
 }
 
-// TestStateToStatus_AllocatedState exercises the default branch in stateToStatus (no action, no poll).
-// StateAllocated is not matched by any case in the switch, so PollAfterMs and Action stay zero.
+// TestStateToStatus_AllocatedState: an allocated handoff only moves on when the
+// browser resubmits (the last SB-2 ended with 503/409), so SB-3 says "resubmit".
 func TestStateToStatus_AllocatedState(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	clk := fixtures.NewFakeClock()
@@ -161,7 +161,7 @@ func TestStateToStatus_AllocatedState(t *testing.T) {
 		"01JAB0000000000000000092", "01JAB0000000000000000092", "sid")
 	require.NoError(t, err)
 	assert.Equal(t, domain.StateAllocated, result.State)
-	assert.Empty(t, result.Action)
+	assert.Equal(t, "resubmit", result.Action)
 	assert.Zero(t, result.PollAfterMs)
 }
 
@@ -242,8 +242,9 @@ func TestSubmitPaid_TenantPending_Result(t *testing.T) {
 	assert.Equal(t, domain.StateTenantPending, result.State)
 }
 
-// TestSubmitPaid_RP2EmailUnavailable_DeletesHandoff tests the RP-2 email-unavailable cleanup.
-func TestSubmitPaid_RP2EmailUnavailable_DeletesHandoff(t *testing.T) {
+// TestSubmitPaid_RP2EmailUnavailable_KeepsPaidHandoff: the subscription is already
+// paid, so the handoff stays in payment_confirmed and a resubmit reuses it.
+func TestSubmitPaid_RP2EmailUnavailable_KeepsPaidHandoff(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	rp := fixtures.NewFakeRealmProvisioner("kc")
 	rp.DirectErr = domain.NewError(domain.ErrEmailUnavailable, "email in use")
@@ -261,7 +262,9 @@ func TestSubmitPaid_RP2EmailUnavailable_DeletesHandoff(t *testing.T) {
 	assert.Equal(t, domain.ErrEmailUnavailable, de.Cause)
 
 	got, _ := handoffs.Get(context.Background(), sess.SignupID)
-	assert.Nil(t, got, "handoff must be deleted after RP-2 email unavailable")
+	require.NotNil(t, got, "a paid handoff must not be deleted")
+	assert.Equal(t, domain.StatePaymentConfirmed, got.State)
+	assert.Equal(t, "sub-001", got.BillingSubscriptionID)
 }
 
 // TestSubmitPaid_HandoffCreateFails exercises the handoff store Create error path.

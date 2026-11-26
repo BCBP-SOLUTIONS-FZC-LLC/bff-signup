@@ -84,11 +84,11 @@ func (o *HandoffOrchestrator) Run(ctx context.Context, in OrchestratorInput) (*O
 		// PUB-1 slug pre-check — server-side before RP-1 to prevent orphaned Keycloak
 		// users when the slug is already taken (A-3, LLD §7). Fail-open: 5xx/network
 		// errors return nil so the signup proceeds and relies on I-1's unique constraint.
+		// The handoff stays `allocated`: no Keycloak user exists, so SB-4 cannot apply
+		// a new slug. The browser resubmits SB-2 with the new slug, which handleResubmit
+		// treats as changed details (fresh tenant_id; nothing was created yet).
 		if err := o.om.CheckSlugFree(ctx, h.Slug); err != nil {
 			suggestions := domain.SuggestSlugs(h.Slug, h.CompanyName, nil)
-			h.State = domain.StateSlugConflict
-			h.UpdatedAt = o.clock.Now()
-			_ = o.handoffs.Update(ctx, h)
 			return &OrchestratorResult{
 				State:           domain.StateSlugConflict,
 				SlugSuggestions: suggestions,
@@ -149,7 +149,7 @@ func (o *HandoffOrchestrator) ResumeI1(ctx context.Context, h *domain.Handoff) (
 		h.State = domain.StateFailed
 		h.UpdatedAt = o.clock.Now()
 		_ = o.handoffs.Update(ctx, h)
-		metrics.IncProvisioningFailed("trial", "org_membership", "exhausted") // LLD §11.2
+		metrics.IncProvisioningFailed(signupMode(h), "org_membership", "exhausted") // LLD §11.2
 		return &OrchestratorResult{State: domain.StateFailed}, nil
 	}
 
@@ -187,7 +187,7 @@ func (o *HandoffOrchestrator) ChangeSlug(ctx context.Context, h *domain.Handoff,
 	}
 	if isDomainCause(err, domain.ErrInternal) {
 		// Contract error (LLD §9.5): fail fast, exactly as runI1 does.
-		metrics.IncProvisioningFailed("trial", "org_membership", "contract_error") // LLD §11.2
+		metrics.IncProvisioningFailed(signupMode(h), "org_membership", "contract_error") // LLD §11.2
 		return nil, err
 	}
 	if !isDomainCause(err, domain.ErrDependencyUnavailable) {
@@ -229,7 +229,7 @@ func (o *HandoffOrchestrator) runI1(ctx context.Context, h *domain.Handoff) (*Or
 			// hide it behind a 202. Fail fast: the handoff stays identity_created,
 			// the caller returns 500 internal_error, and the paged contract_error
 			// metric fires. 5xx and timeouts (ErrDependencyUnavailable) still retry.
-			metrics.IncProvisioningFailed("trial", "org_membership", "contract_error") // LLD §11.2
+			metrics.IncProvisioningFailed(signupMode(h), "org_membership", "contract_error") // LLD §11.2
 			return nil, err
 		}
 		lastErr = err
@@ -266,10 +266,13 @@ func (o *HandoffOrchestrator) callI1Once(ctx context.Context, h *domain.Handoff)
 		OwnerUserID:   h.KeycloakUserID,
 		DefaultLocale: h.DefaultLocale,
 		LicensedSeats: h.LicensedSeats,
-		// AdminEmailHMAC carries the HMAC-SHA256 hex of lower(email). O&M writes it
-		// atomically into trial_signup_ledger inside the I-1 tx (CR-4). The backstop
-		// consumer omits it legitimately — the omitempty tag handles the empty case.
-		EmailHash: h.AdminEmailHMAC,
+	}
+	// Trial only: O&M claims email_hash in trial_signup_ledger inside the I-1 tx
+	// (CR-4). A paid signup is not a trial: sending it would claim the ledger —
+	// and fail with 409 TRIAL_ALREADY_USED for anyone who once had a trial,
+	// after they have paid. The backstop omits it too (omitempty).
+	if h.Type != domain.SignupTypePaid {
+		req.EmailHash = h.AdminEmailHMAC
 	}
 	resp, err := o.om.ProvisionTenant(ctx, req)
 	if err != nil {
@@ -293,7 +296,7 @@ func (o *HandoffOrchestrator) callI1Once(ctx context.Context, h *domain.Handoff)
 	h.State = domain.StateCompleted
 	h.UpdatedAt = o.clock.Now()
 	_ = o.handoffs.Update(ctx, h)
-	metrics.IncProvisioningSucceeded("trial", "inline") // LLD §11.2 — strategy=inline (I-1 completed within SB-2 request)
+	metrics.IncProvisioningSucceeded(signupMode(h), "inline") // LLD §11.2 — strategy=inline (I-1 completed within the SB-2/SB-5 request)
 	return &OrchestratorResult{
 		State:          domain.StateCompleted,
 		KeycloakUserID: h.KeycloakUserID,
@@ -366,6 +369,14 @@ func pause(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// signupMode is the metrics `mode` label for a handoff: "paid" for SB-5, else "trial".
+func signupMode(h *domain.Handoff) string {
+	if h != nil && h.Type == domain.SignupTypePaid {
+		return string(domain.SignupTypePaid)
+	}
+	return string(domain.SignupTypeTrial)
 }
 
 func isDomainCause(err error, cause error) bool {

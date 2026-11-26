@@ -1,7 +1,12 @@
 {{- if .Values.serviceMonitor.enabled }}
-# PrometheusRule — alert rules for the Signup BFF (LLD §11.5).
+# PrometheusRule — the deployed alerts and SLO rules for bff-signup (LLD §11.1, §11.5).
 # Requires kube-prometheus-stack (monitoring.coreos.com/v1 CRD).
-# Flat copy: deploy/monitoring/app-alerts.yml (used for non-kube-prometheus setups).
+#
+# Generated from deploy/monitoring/app-alerts.yml + deploy/monitoring/slo-rules.yml
+# (the flat copies for --rule-files setups). Only the job/namespace selectors are
+# templated and Prometheus' {{ "{{ $value }}" }} is Helm-escaped; rule names and
+# expressions must stay identical — .github/scripts/monitoring-rules-sync.py
+# checks it in CI.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -14,155 +19,257 @@ metadata:
     {{- end }}
 spec:
   groups:
-    - name: bff_signup_availability
-      rules:
-        - alert: SignupBFFDown
-          expr: |
-            absent(up{job={{ include "bff-signup.fullname" . | quote }}} == 1)
-          for: 2m
-          labels:
-            severity: critical
-            team: web-growth
-          annotations:
-            summary: bff-signup has no healthy instances
-            description: >-
-              No bff-signup pods have been scraped as healthy for 2 minutes.
-              kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name=bff-signup
+      # ── Availability ─────────────────────────────────────────────────────────────
+      - name: bff_signup_availability
+        rules:
+          - alert: SignupBFFDown
+            expr: |
+              absent(up{job={{ include "bff-signup.fullname" . | quote }}} == 1)
+            for: 2m
+            labels:
+              severity: critical
+              team: web-growth
+            annotations:
+              summary: bff-signup has no healthy instances
+              description: >-
+                No bff-signup pods have been scraped as healthy for 2 minutes.
+                Check pod readiness: kubectl get pods -l app.kubernetes.io/name=bff-signup
+              runbook: "docs/observability/runbooks.md#signupbffdown"
 
-        - alert: SignupBFFReplicasMissing
-          expr: |
-            sum(up{job={{ include "bff-signup.fullname" . | quote }}}) < 2
-          for: 5m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: bff-signup running below minimum replica count
-            description: >-
-              Fewer than 2 replicas are healthy (minReplicas=2, LLD §13.1).
-              Current: {{ "{{ $value }}" }}.
+          - alert: SignupBFFReplicasMissing
+            expr: |
+              sum(up{job={{ include "bff-signup.fullname" . | quote }}}) < 2
+            for: 5m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: bff-signup running below minimum replica count
+              description: >-
+                Fewer than 2 replicas are healthy (minReplicas=2, LLD §13.1).
+              runbook: "docs/observability/runbooks.md#signupbffreplicasmissing"
 
-    - name: bff_signup_provisioning
-      rules:
-        - alert: SignupProvisioningFailureRate
-          expr: |
-            rate(signup_bff_provisioning_failed_total[10m])
-              /
-            (rate(signup_bff_form_submitted_total[10m]) + 0.001)
-            > 0.05
-          for: 10m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: Signup provisioning failure rate above 5%
-            description: >-
-              {{ "{{ $value | humanizePercentage }}" }} of signups are failing provisioning.
-              Check IAM service health and application logs (stage/reason labels for detail).
-
-        - alert: SignupOrgMembershipLag
-          expr: |
-            sum(increase(signup_bff_provisioning_failed_total{stage="org_membership",reason="exhausted"}[15m])) > 0
-          for: 0m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: Signup stuck in tenant_pending — O&M not completing
-            description: >-
-              One or more signups have been in tenant_pending for 15 minutes without
-              completing. Check O&M service health and the TenantIdentityProvisioned
-              SNS subscription filter on tenant-orgm-q (LLD §7, BFF-2 SRE).
-
-        - alert: SignupContractError
-          expr: |
-            sum(increase(signup_bff_provisioning_failed_total{reason="contract_error"}[5m])) > 0
-          for: 0m
-          labels:
-            severity: critical
-            team: web-growth
-          annotations:
-            summary: Signup BFF IAM contract mismatch — page required
-            description: >-
-              RP-1 or I-1 returned an unexpected error (e.g. INVALID_REQUEST for plan).
-              This indicates a BFF bug or an IAM contract change. Immediate investigation required.
-
-        - alert: SignupRealmProvisionerUnavailable
-          expr: |
-            sum(increase(signup_bff_provisioning_failed_total{stage="realm_provisioner"}[5m])) > 10
-          for: 5m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: Realm Provisioner unavailable for signup
-            description: >-
-              RP-1 is failing > 10 times in 5 minutes. Users cannot complete signups.
-              Check iam-realm-provisioner and Keycloak health.
-
-        - alert: SignupBackstopActivityHigh
-          expr: |
-            increase(iam_org_membership_tenant_provisioning_backstop_total{result="created"}[15m]) > 5
-          for: 0m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: O&M backstop creating tenants — BFF I-1 failing more than expected
-            description: >-
-              The O&M backstop has created {{ "{{ $value }}" }} tenants in the last 15 minutes,
-              meaning the BFF's I-1 calls are failing and browsers are abandoning.
-              Investigate I-1 failure rate and O&M health.
-
-    - name: bff_signup_abuse_controls
-      rules:
-        - alert: SignupCaptchaErrorRate
-          expr: |
-            rate(signup_bff_captcha_challenged_total{result="error"}[5m])
-              /
-            (rate(signup_bff_captcha_challenged_total[5m]) + 0.001)
-            > 0.05
-          for: 5m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: Turnstile CAPTCHA error rate above 5%
-            description: >-
-              {{ "{{ $value | humanizePercentage }}" }} of CAPTCHA verifications are returning
-              errors (not failures — errors mean Turnstile is unreachable).
-              Check network policy / ServiceEntry for challenges.cloudflare.com:443.
-
-    - name: bff_signup_infrastructure
-      rules:
-        - alert: SignupValkeyDown
-          expr: |
-            kube_pod_container_ready{namespace={{ .Release.Namespace | quote }},
-              pod=~"bff-signup-.*", container="bff-signup"} == 0
-          for: 2m
-          labels:
-            severity: critical
-            team: web-growth
-          annotations:
-            summary: bff-signup pods not ready — likely Valkey unreachable
-            description: >-
-              bff-signup readiness probe (/readyz, which pings Valkey) is failing.
-              The service is fail-closed — all signup endpoints return 503.
-
-        - alert: SignupSLOBurn
-          expr: |
-            (
-              rate(signup_bff_request_duration_seconds_count{route="/trial",code=~"5.."}[1h])
+      # ── Provisioning funnel ───────────────────────────────────────────────────────
+      - name: bff_signup_provisioning
+        rules:
+          - alert: SignupProvisioningFailureRate
+            expr: |
+              sum by (domain, service, environment) (rate(bff_signup_provisioning_failed_total[10m]))
                 /
-              rate(signup_bff_request_duration_seconds_count{route="/trial"}[1h])
-            ) > 0.02
-          for: 0m
-          labels:
-            severity: warning
-            team: web-growth
-          annotations:
-            summary: bff-signup burning > 2% of monthly SLO error budget in 1 hour
-            description: >-
-              Error budget burn rate is elevated. At this rate the monthly
-              99.9% availability SLO will be exhausted. Investigate immediately.
+              clamp_min(sum by (domain, service, environment) (rate(bff_signup_form_submitted_total[10m])), 0.001)
+              > 0.05
+            for: 10m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: Signup provisioning failure rate above 5%
+              description: >-
+                {{ "{{ $value | humanizePercentage }}" }} of signups are failing provisioning.
+                Filter bff_signup_provisioning_failed_total by mode/stage/reason.
+              runbook: "docs/observability/runbooks.md#signupprovisioningfailurerate"
+
+          - alert: SignupOrgMembershipLag
+            expr: |
+              sum by (domain, service, environment) (increase(bff_signup_provisioning_failed_total{stage="org_membership",reason="exhausted"}[15m])) > 0
+            for: 0m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: Signup stuck in tenant_pending — O&M not completing I-1
+              description: >-
+                Signups have been in tenant_pending for 15 minutes without completing.
+                Check O&M health and the TenantIdentityProvisioned SNS filter for tenant-orgm-q.
+              runbook: "docs/observability/runbooks.md#signuporgmembershiplag"
+
+          - alert: SignupContractError
+            expr: |
+              sum by (domain, service, environment) (increase(bff_signup_provisioning_failed_total{reason="contract_error"}[5m])) > 0
+            for: 0m
+            labels:
+              severity: critical
+              team: web-growth
+            annotations:
+              summary: Signup BFF IAM contract mismatch — page required
+              description: >-
+                RP or I-1 returned an unexpected error (e.g. INVALID_REQUEST for plan).
+                This is a BFF bug or an IAM contract change.
+              runbook: "docs/observability/runbooks.md#signupcontracterror"
+
+          - alert: SignupRealmProvisionerUnavailable
+            expr: |
+              sum by (domain, service, environment) (rate(bff_signup_dependency_call_duration_seconds_count{dependency="realm_provisioner",outcome="error"}[5m]))
+                /
+              clamp_min(sum by (domain, service, environment) (rate(bff_signup_dependency_call_duration_seconds_count{dependency="realm_provisioner"}[5m])), 0.001)
+              > 0.2
+            for: 5m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: Realm Provisioner failing for signup
+              description: >-
+                More than 20% of RP-1/RP-2 calls are failing (transport error or 5xx).
+                Users cannot complete signups. Check iam-realm-provisioner and Keycloak.
+              runbook: "docs/observability/runbooks.md#signuprealmprovisionerunavailable"
+
+          - alert: SignupBillingUnavailable
+            expr: |
+              sum by (domain, service, environment) (rate(bff_signup_dependency_call_duration_seconds_count{dependency="billing",outcome="error"}[10m]))
+                /
+              clamp_min(sum by (domain, service, environment) (rate(bff_signup_dependency_call_duration_seconds_count{dependency="billing"}[10m])), 0.001)
+              > 0.2
+            for: 10m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: Billing B-I1 failing for paid signup
+              description: >-
+                More than 20% of Billing authorize-and-charge calls are failing (transport
+                error or 5xx). Paid signups get 503 + Retry-After; handoffs are kept and
+                resubmits reuse the same charge key, so nothing is charged twice (LLD §19.4).
+              runbook: "docs/observability/runbooks.md#signupbillingunavailable"
+
+          - alert: SignupBackstopActivityHigh
+            expr: |
+              sum by (environment) (increase(iam_org_membership_tenant_provisioning_backstop_total{result="created"}[15m])) > 5
+            for: 0m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: O&M backstop creating tenants — BFF I-1 failing
+              description: >-
+                The O&M backstop created {{ "{{ $value }}" }} tenants in the last 15 minutes,
+                meaning the BFF's I-1 calls are failing and browsers are abandoning signups.
+              runbook: "docs/observability/runbooks.md#signupbackstopactivityhigh"
+
+      # ── Abuse controls ────────────────────────────────────────────────────────────
+      - name: bff_signup_abuse_controls
+        rules:
+          - alert: SignupCaptchaErrorRate
+            expr: |
+              sum by (domain, service, environment) (rate(bff_signup_captcha_challenged_total{result="error"}[5m]))
+                /
+              clamp_min(sum by (domain, service, environment) (rate(bff_signup_captcha_challenged_total[5m])), 0.001)
+              > 0.05
+            for: 5m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: Turnstile CAPTCHA error rate above 5%
+              description: >-
+                {{ "{{ $value | humanizePercentage }}" }} of CAPTCHA verifications are erroring
+                (not failures — errors mean Turnstile is unreachable).
+                Check the ServiceEntry for challenges.cloudflare.com:443.
+              runbook: "docs/observability/runbooks.md#signupcaptchaerrorrate"
+
+      # ── Infrastructure ────────────────────────────────────────────────────────────
+      - name: bff_signup_infrastructure
+        rules:
+          - alert: SignupValkeyDown
+            expr: |
+              kube_pod_container_ready{namespace={{ .Release.Namespace | quote }}, container="bff-signup"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              team: web-growth
+            annotations:
+              summary: bff-signup readiness failing — likely Valkey unreachable
+              description: >-
+                The bff-signup readiness probe (/readyz, pings Valkey) is failing.
+                All signup endpoints return 503 (fail-closed, LLD §6, N-7).
+              runbook: "docs/observability/runbooks.md#signupvalkeydown"
+      # ── SLI recording ─────────────────────────────────────────────────────────
+      - name: bff-signup.slo.records
+        interval: 30s
+        rules:
+          # SLO-1 error ratio (5xx / all) on the two signup submit routes.
+          # metric_status: proposed (platform_http_requests_total).
+          - record: bff:signup_error_ratio:rate_5m
+            expr: |
+              sum by (domain, service, environment) (rate(platform_http_requests_total{
+                service="bff-signup", method="POST",
+                route=~"/api/v1/signup/(trial|paid)", status_class="5xx"
+              }[5m]))
+              /
+              clamp_min(sum by (domain, service, environment) (rate(platform_http_requests_total{
+                service="bff-signup", method="POST",
+                route=~"/api/v1/signup/(trial|paid)"
+              }[5m])), 0.001)
+
+          # metric_status: proposed (platform_http_requests_total).
+          - record: bff:signup_error_ratio:rate_1h
+            expr: |
+              sum by (domain, service, environment) (rate(platform_http_requests_total{
+                service="bff-signup", method="POST",
+                route=~"/api/v1/signup/(trial|paid)", status_class="5xx"
+              }[1h]))
+              /
+              clamp_min(sum by (domain, service, environment) (rate(platform_http_requests_total{
+                service="bff-signup", method="POST",
+                route=~"/api/v1/signup/(trial|paid)"
+              }[1h])), 0.001)
+
+          # SLO-2 provisioning success: completed / submitted (Tier 3).
+          - record: bff:provisioning_success_ratio:rate_1h
+            expr: |
+              sum by (domain, service, environment) (rate(bff_signup_provisioning_succeeded_total[1h]))
+              /
+              clamp_min(sum by (domain, service, environment) (rate(bff_signup_form_submitted_total[1h])), 0.001)
+
+      # ── Burn-rate alerts (multi-window) ───────────────────────────────────────
+      - name: bff-signup.slo.alerts
+        rules:
+          # Fast burn: > 14.4× the 0.1% budget over 5 min → outage in progress.
+          - alert: SignupSLOFastBurn
+            expr: |
+              bff:signup_error_ratio:rate_5m > (14.4 * (1 - 0.999))
+            for: 2m
+            labels:
+              severity: critical
+              team: web-growth
+              metric_status: proposed
+            annotations:
+              summary: bff-signup burning error budget at 14.4× (fast burn — outage)
+              description: >-
+                Signup availability SLO (99.9%) is burning at >14.4× the allowed rate.
+                At this pace the monthly budget exhausts in about two days of a 30-day month.
+              runbook: "docs/observability/runbooks.md#signupslofastburn"
+
+          # Slow burn: > 2× the budget over 1 h → gradual degradation.
+          - alert: SignupSLOSlowBurn
+            expr: |
+              bff:signup_error_ratio:rate_1h > (2 * (1 - 0.999))
+            for: 15m
+            labels:
+              severity: warning
+              team: web-growth
+              metric_status: proposed
+            annotations:
+              summary: bff-signup burning error budget at 2× (slow burn — degradation)
+              description: >-
+                Signup availability SLO (99.9%) has been burning at >2× the allowed rate
+                for 15 minutes.
+              runbook: "docs/observability/runbooks.md#signupsloslowburn"
+
+          # SLO-2: under 99% of submitted signups completing over the last hour.
+          # Only when there is traffic (≥ 0.01 submissions/s, about 36 an hour).
+          - alert: SignupProvisioningSLOBreach
+            expr: |
+              bff:provisioning_success_ratio:rate_1h < 0.99
+                and on (domain, service, environment)
+              sum by (domain, service, environment) (rate(bff_signup_form_submitted_total[1h])) > 0.01
+            for: 30m
+            labels:
+              severity: warning
+              team: web-growth
+            annotations:
+              summary: bff-signup provisioning success below 99% (SLO-2)
+              description: >-
+                {{ "{{ $value | humanizePercentage }}" }} of submitted signups completed in the last hour.
+              runbook: "docs/observability/runbooks.md#signupprovisioningslobreach"
 {{- end }}
