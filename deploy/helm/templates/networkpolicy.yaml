@@ -39,24 +39,66 @@ spec:
     {{- end }}
 
   egress:
-    # DNS
-    - ports:
+    {{- $eg := .Values.networkPolicy.egress }}
+    # DNS (kube-system CoreDNS)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Valkey (ElastiCache)
-    - ports:
+    # Valkey (ElastiCache) — only the cache subnet(s)
+    - to:
+        {{- range $eg.valkeyCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
         - port: 6379
           protocol: TCP
-    # IAM services (RP-1, I-1, eligibility, Catalog) via Istio sidecar
-    - ports:
+    # Realm Provisioner, Org & Membership, Catalog (iam) and Billing (billing) via the Istio sidecar
+    - to:
+        {{- range $eg.serviceNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+      ports:
         - port: 8080
           protocol: TCP
-    # Turnstile (HTTPS) and OTel collector
-    - ports:
-        - port: 443
-          protocol: TCP
+    # OTel collector
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $eg.otelNamespace }}
+      ports:
         - port: 4317
           protocol: TCP
+    {{- with $eg.istioControlPlaneNamespace }}
+    # istiod — the sidecar's configuration (xDS) and workload certificates
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      ports:
+        - port: 15012
+          protocol: TCP
+    {{- end }}
+    {{- if $eg.internetHTTPS }}
+    # Turnstile (HTTPS) — public internet only; private ranges excluded
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
 {{- end }}

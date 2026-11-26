@@ -68,7 +68,7 @@ const docTemplate = `{
                         }
                     },
                     "202": {
-                        "description": "Identity created; tenant still provisioning — poll SB-3",
+                        "description": "Tenant still provisioning (status=provisioning, poll SB-3), or 3-D Secure needed (status=payment_action_required: complete action.client_secret, then re-POST the same body with a fresh captcha_token)",
                         "schema": {
                             "$ref": "#/definitions/http.PaidSignupResponse"
                         }
@@ -76,37 +76,49 @@ const docTemplate = `{
                     "400": {
                         "description": "Validation failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "401": {
                         "description": "Session expired or missing",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "CSRF token invalid or CAPTCHA failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
-                        "description": "Slug already taken — submit SB-4 with a new slug",
+                        "description": "SLUG_TAKEN (+ suggestions): resubmit SB-5 with a new slug if paid but not yet provisioned, else SB-4; INVALID_STATE: a payment is in progress, or details changed after payment",
                         "schema": {
-                            "$ref": "#/definitions/http.SlugTakenResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "410": {
+                        "description": "CHARGE_EXPIRED — 3-D Secure not completed in time; start a new signup",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "PAYMENT_DECLINED (+ decline_reason, top-level); use another payment method",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "429": {
                         "description": "Rate limit exceeded",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
-                        "description": "Dependency unavailable",
+                        "description": "Dependency unavailable; retry the same body after Retry-After",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 }
@@ -132,13 +144,13 @@ const docTemplate = `{
                     "429": {
                         "description": "Too many session starts from this IP (Retry-After header, seconds)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
                         "description": "Valkey unavailable (fail-closed)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 }
@@ -199,43 +211,43 @@ const docTemplate = `{
                     "400": {
                         "description": "Validation failed (includes wrong Content-Type, unknown JSON fields)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "401": {
                         "description": "Session expired or missing",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "CSRF token invalid or CAPTCHA failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry",
                         "schema": {
-                            "$ref": "#/definitions/http.SlugTakenResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "413": {
                         "description": "Request body larger than 16 KiB",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "429": {
                         "description": "Rate limit exceeded (Retry-After header, seconds)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
                         "description": "Dependency unavailable (Valkey, Turnstile, RP-1)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 }
@@ -303,31 +315,31 @@ const docTemplate = `{
                     "400": {
                         "description": "Slug validation failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "401": {
                         "description": "Session expired or missing",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "CSRF token invalid",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Signup not found or does not belong to this session",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "New slug also taken — try again",
                         "schema": {
-                            "$ref": "#/definitions/http.SlugTakenResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 }
@@ -367,19 +379,19 @@ const docTemplate = `{
                     "401": {
                         "description": "Session expired or missing",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Signup not found or does not belong to this session",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "429": {
                         "description": "Too many status polls (Retry-After header, seconds)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 }
@@ -445,6 +457,19 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_BCBP-SOLUTIONS-FZC-LLC_platform-gincommon_v2_internal_problem.FieldError": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "description": "Field is the JSON path of the invalid field (e.g. \"deadline\", \"items[0].sku\").",
+                    "type": "string"
+                },
+                "message": {
+                    "description": "Message is a fixed phrase (\"is required\", \"must be in the future\"). It never\nechoes the rejected value, which may be PII.",
+                    "type": "string"
+                }
+            }
+        },
         "http.CaptchaInfo": {
             "type": "object",
             "properties": {
@@ -452,29 +477,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "site_key": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.ErrorResponse": {
-            "type": "object",
-            "properties": {
-                "detail": {
-                    "type": "string"
-                },
-                "errorCode": {
-                    "type": "string"
-                },
-                "retry_after_ms": {
-                    "type": "integer"
-                },
-                "status": {
-                    "type": "integer"
-                },
-                "title": {
-                    "type": "string"
-                },
-                "type": {
                     "type": "string"
                 }
             }
@@ -519,7 +521,9 @@ const docTemplate = `{
                     "$ref": "#/definitions/domain.Plan"
                 },
                 "seats": {
-                    "type": "integer"
+                    "type": "integer",
+                    "maximum": 1000,
+                    "minimum": 1
                 },
                 "slug": {
                     "type": "string"
@@ -532,8 +536,20 @@ const docTemplate = `{
         "http.PaidSignupResponse": {
             "type": "object",
             "properties": {
+                "action": {
+                    "description": "status=payment_action_required only",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/http.PaymentAction"
+                        }
+                    ]
+                },
                 "email_verification_sent": {
                     "type": "boolean"
+                },
+                "expires_at": {
+                    "description": "status=payment_action_required only",
+                    "type": "string"
                 },
                 "next": {
                     "type": "string"
@@ -546,6 +562,66 @@ const docTemplate = `{
                 },
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "http.PaymentAction": {
+            "type": "object",
+            "properties": {
+                "client_secret": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "\"3ds\"",
+                    "type": "string"
+                }
+            }
+        },
+        "http.ProblemResponse": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "description": "Detail is a sentence the service wrote about this occurrence. It never\ncarries exception text, SQL, secrets or tenant information.",
+                    "type": "string"
+                },
+                "errorCode": {
+                    "description": "ErrorCode is the stable, upper snake case, machine-readable code.",
+                    "type": "string"
+                },
+                "instance": {
+                    "description": "Instance is the request path (never the query string, which may carry tokens).",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "Status is the HTTP status code; it always equals the response status.",
+                    "type": "integer"
+                },
+                "tenantId": {
+                    "description": "TenantID is set only for a request with a verified tenant context.",
+                    "type": "string"
+                },
+                "timestamp": {
+                    "description": "Timestamp is when the problem was created, formatted with TimestampLayout.",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title is the short, fixed summary of the type. It never varies per occurrence.",
+                    "type": "string"
+                },
+                "traceId": {
+                    "description": "TraceID correlates the response with the server's logs and traces.",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "Type is the absolute, stable type URI ({base}/{domain}/{error}), or\n\"about:blank\" for a status without a registered type (RFC 9457 §4.2.1).",
+                    "type": "string"
+                },
+                "validationErrors": {
+                    "description": "ValidationErrors lists the invalid fields of a validation-failed problem.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_BCBP-SOLUTIONS-FZC-LLC_platform-gincommon_v2_internal_problem.FieldError"
+                    }
                 }
             }
         },
@@ -587,23 +663,6 @@ const docTemplate = `{
             "properties": {
                 "slug": {
                     "type": "string"
-                }
-            }
-        },
-        "http.SlugTakenResponse": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string"
-                },
-                "signup_id": {
-                    "type": "string"
-                },
-                "suggestions": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 }
             }
         },

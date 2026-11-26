@@ -1,6 +1,10 @@
 package http
 
-import "github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
+import (
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
+)
 
 // ── SB-1 response ─────────────────────────────────────────────────────────────
 
@@ -57,7 +61,7 @@ type SlugChangeRequest struct {
 	Slug string `json:"slug" binding:"required"`
 }
 
-// ── SB-5 request / response (Phase 1.5, LLD §19) ─────────────────────────────
+// ── SB-5 request / response (LLD §19) ─────────────────────────────────────────
 
 type PaidSignupRequest struct {
 	CompanyName  string      `json:"company_name"  binding:"required"`
@@ -66,7 +70,7 @@ type PaidSignupRequest struct {
 	AdminEmail   string      `json:"admin_email"   binding:"required"`
 	Password     string      `json:"password"      binding:"required"`
 	Plan         domain.Plan `json:"plan"          binding:"required"`
-	Seats        int         `json:"seats"         binding:"required"`
+	Seats        int         `json:"seats"         binding:"required,min=1,max=1000"`
 	PaymentToken string      `json:"payment_token" binding:"required"` // Stripe token from browser
 	AcceptTerms  bool        `json:"accept_terms"`
 	TermsVersion string      `json:"terms_version" binding:"required"`
@@ -74,54 +78,27 @@ type PaidSignupRequest struct {
 }
 
 type PaidSignupResponse struct {
-	SignupID              string `json:"signup_id"`
-	Status                string `json:"status"`
-	EmailVerificationSent bool   `json:"email_verification_sent,omitempty"`
-	Next                  string `json:"next,omitempty"`
-	PollAfterMs           int    `json:"poll_after_ms,omitempty"`
+	SignupID              string         `json:"signup_id"`
+	Status                string         `json:"status"`
+	EmailVerificationSent bool           `json:"email_verification_sent,omitempty"`
+	Next                  string         `json:"next,omitempty"`
+	PollAfterMs           int            `json:"poll_after_ms,omitempty"`
+	Action                *PaymentAction `json:"action,omitempty"`     // status=payment_action_required only
+	ExpiresAt             string         `json:"expires_at,omitempty"` // status=payment_action_required only
 }
 
-// SlugTakenResponse is the RFC 9457 representation of a 409 slug_taken error.
-// Fields are RFC 9457 §3.2 extension members, not a custom error DTO.
-// The actual response is built and serialized by gincommon.AbortWithProblem.
-// This type is kept only for Swagger annotation reference (@Failure 409 {object} SlugTakenResponse).
-//
-// Wire shape (application/problem+json):
-//
-//	{
-//	  "type":       "...",
-//	  "title":      "...",
-//	  "status":     409,
-//	  "errorCode":  "SLUG_TAKEN",
-//	  "signup_id":  "01JAB...",
-//	  "suggestions": ["acme-2", "acme-hq"],
-//	  "message":    "That workspace address is taken..."
-//	}
-type SlugTakenResponse struct {
-	SignupID    string   `json:"signup_id"`
-	Suggestions []string `json:"suggestions"`
-	Message     string   `json:"message,omitempty"`
+// PaymentAction tells the browser to complete 3-D Secure with the payment
+// provider's JS, then re-POST SB-5 with the same body and a fresh CAPTCHA token
+// (BL-OQ-8). client_secret is for the provider's JS only.
+type PaymentAction struct {
+	Type         string `json:"type"` // "3ds"
+	ClientSecret string `json:"client_secret"`
 }
 
-// ErrorResponse is the RFC 9457 representation of every non-slug error response.
-// The actual response is built and serialized by gincommon.AbortWithProblem.
-// This type is kept only for Swagger annotation reference (@Failure ... {object} ErrorResponse).
-//
-// Wire shape (application/problem+json):
-//
-//	{
-//	  "type":           "...",
-//	  "title":          "...",
-//	  "status":         409,
-//	  "detail":         "...",
-//	  "errorCode":      "INVALID_STATE",
-//	  "retry_after_ms": 500
-//	}
-type ErrorResponse struct {
-	Type         string `json:"type,omitempty"`
-	Title        string `json:"title"`
-	Status       int    `json:"status"`
-	Detail       string `json:"detail,omitempty"`
-	ErrorCode    string `json:"errorCode,omitempty"`
-	RetryAfterMS int    `json:"retry_after_ms,omitempty"`
-}
+// ProblemResponse is the RFC 9457 Problem Details type returned for every
+// non-2xx response (application/problem+json). It is platform-gincommon's own
+// type; all @Failure Swagger annotations reference this alias, as in the IAM
+// services. Error-specific members (signup_id, suggestions, message,
+// retry_after_seconds, retry_after_ms, decline_reason, reason) are RFC 9457
+// §3.2 extension members at the top level, added by gincommon.AbortWithProblem.
+type ProblemResponse = problem.Problem

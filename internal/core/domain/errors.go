@@ -15,6 +15,8 @@ var (
 	ErrInvalidState          = errors.New("invalid_state")
 	ErrOperationInProgress   = errors.New("operation_in_progress") // RP-1 409 OPERATION_IN_PROGRESS; the orchestrator retries it, it never reaches the user
 	ErrRateLimited           = errors.New("rate_limited")
+	ErrPaymentDeclined       = errors.New("payment_declined") // Billing B-I1 402 PAYMENT_DECLINED (BL-OQ-8) → 422
+	ErrChargeExpired         = errors.New("charge_expired")   // Billing B-I1 410 CHARGE_EXPIRED: 3-D Secure abandoned → 410
 	ErrDependencyUnavailable = errors.New("dependency_unavailable")
 	ErrInternal              = errors.New("internal_error")
 )

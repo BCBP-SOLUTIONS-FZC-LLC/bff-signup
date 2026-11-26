@@ -99,7 +99,9 @@ func TestPaidSubmit_CaptchaFails(t *testing.T) {
 	assert.Equal(t, domain.ErrCaptchaFailed, de.Cause)
 }
 
-func TestPaidSubmit_BillingFails_DeletesHandoff(t *testing.T) {
+// A Billing error with an unknown outcome keeps the handoff, so the retry reuses
+// tenant_id and Idempotency-Key "charge:<tenant_id>" (BL-OQ-8: no double charge).
+func TestPaidSubmit_BillingUnavailable_KeepsHandoff(t *testing.T) {
 	handoffs := fixtures.NewFakeHandoffStore()
 	billing := fixtures.NewFakeBillingClient("")
 	billing.Err = domain.NewError(domain.ErrDependencyUnavailable, "payment service down")
@@ -114,9 +116,10 @@ func TestPaidSubmit_BillingFails_DeletesHandoff(t *testing.T) {
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
 
-	// Handoff must have been deleted (billing failure cleanup, LLD §19)
 	got, _ := handoffs.Get(context.Background(), sess.SignupID)
-	assert.Nil(t, got, "handoff must be deleted after billing failure")
+	require.NotNil(t, got, "handoff must survive an unknown Billing outcome")
+	assert.Equal(t, domain.StatePaymentPending, got.State)
+	assert.Equal(t, "charge:"+got.TenantID, billing.Calls[0].IdempotencyKey)
 }
 
 func TestPaidSubmit_ValidationFails_MissingPaymentToken(t *testing.T) {
@@ -141,12 +144,13 @@ func TestPaidSubmit_IPRateLimitExceeded(t *testing.T) {
 		fixtures.NewFakeHandoffStore(), limiter, &fixtures.FakeCaptchaVerifier{},
 		fixtures.NewFakeBillingClient("sub"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
 	)
-	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000030p", CSRFHash: "h"}
-
-	// Exhaust the IP rate limit
-	for range 3 {
+	// Exhaust the IP rate limit with fresh sessions (a repeat on one session only
+	// resumes that attempt and uses no budget).
+	for i := range 3 {
+		sess := &port.Session{SID: "sid", SignupID: fmt.Sprintf("01JAB000000000000000030%dp", i), CSRFHash: "h"}
 		_, _ = svc.Submit(context.Background(), validPaidInput(sess))
 	}
+	sess := &port.Session{SID: "sid", SignupID: "01JAB0000000000000000039p", CSRFHash: "h"}
 	_, err := svc.Submit(context.Background(), validPaidInput(sess))
 	require.Error(t, err)
 	var de *domain.DomainError

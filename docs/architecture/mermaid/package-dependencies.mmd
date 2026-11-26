@@ -2,43 +2,61 @@ graph LR
     domain["internal/core/domain\n(no imports)"]
     port["internal/core/port\n← domain"]
     signupctx["pkg/signupctx\n← port"]
-    service["internal/core/service\n← domain, port"]
+    observability["internal/adapter/outbound/metrics\n(observability: instrumentation only)"]
+    service["internal/core/service\n← domain, port, observability"]
     config["internal/config\n← domain"]
-    inbound["internal/adapter/inbound/http\n← domain, port, service, signupctx"]
-    outbound_v["internal/adapter/outbound/valkey\n← domain, port"]
-    outbound_rp["internal/adapter/outbound/realmprovisioner\n← domain, port"]
-    outbound_om["internal/adapter/outbound/orgmembership\n← domain, port"]
-    outbound_t["internal/adapter/outbound/turnstile\n← domain, port"]
-    outbound_c["internal/adapter/outbound/catalog\n← domain, port"]
-    outbound_h["internal/adapter/outbound/hasher\n← domain, port"]
+    middleware["internal/adapter/inbound/http/middleware\n← port"]
+    swagger["docs/swagger\n(generated)"]
+    inbound["internal/adapter/inbound/http\n← domain, port, service, signupctx, middleware, docs/swagger"]
+    outbound_v["internal/adapter/outbound/valkey\n← domain, port, observability"]
+    outbound_rp["internal/adapter/outbound/realmprovisioner\n← domain, port, observability"]
+    outbound_om["internal/adapter/outbound/orgmembership\n← domain, port, observability"]
+    outbound_b["internal/adapter/outbound/billing\n← domain, port, observability"]
+    outbound_t["internal/adapter/outbound/turnstile\n← domain, port, observability"]
+    outbound_c["internal/adapter/outbound/catalog\n← domain, port, observability"]
+    outbound_h["internal/adapter/outbound/hasher\n← domain, port, observability"]
     cmd["cmd/server\n← all"]
 
     domain --> port
     port --> signupctx
     domain --> service
     port --> service
+    observability --> service
     domain --> config
+    port --> middleware
     domain --> inbound
     port --> inbound
     service --> inbound
     signupctx --> inbound
+    middleware --> inbound
+    swagger --> inbound
     domain --> outbound_v
     port --> outbound_v
     domain --> outbound_rp
     port --> outbound_rp
     domain --> outbound_om
     port --> outbound_om
+    domain --> outbound_b
+    port --> outbound_b
     domain --> outbound_t
     port --> outbound_t
     domain --> outbound_c
     port --> outbound_c
     domain --> outbound_h
     port --> outbound_h
+    observability --> outbound_v
+    observability --> outbound_rp
+    observability --> outbound_om
+    observability --> outbound_b
+    observability --> outbound_t
+    observability --> outbound_c
+    observability --> outbound_h
     config --> cmd
     inbound --> cmd
     outbound_v --> cmd
     outbound_rp --> cmd
     outbound_om --> cmd
+    outbound_b --> cmd
     outbound_t --> cmd
     outbound_c --> cmd
     outbound_h --> cmd

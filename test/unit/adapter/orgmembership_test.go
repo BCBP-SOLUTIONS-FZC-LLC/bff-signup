@@ -320,3 +320,36 @@ func TestOrgMembership_CheckSlugFree_DecodeError_FailOpen(t *testing.T) {
 	err := c.CheckSlugFree(context.Background(), "any-slug")
 	assert.NoError(t, err, "decode error must be fail-open")
 }
+
+func TestOrgMembership_ProvisionTenant_409Codes(t *testing.T) {
+	for code, want := range map[string]error{
+		"TRIAL_ALREADY_USED": domain.ErrTrialNotEligible, // a concurrent trial won the ledger race
+		"TENANT_OFFBOARDED":  domain.ErrInvalidState,
+		"SOMETHING_NEW":      domain.ErrInternal,
+	} {
+		t.Run(code, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": 409, "errorCode": code})
+			}))
+			defer srv.Close()
+			_, err := orgmembership.New(srv.URL, time.Second).ProvisionTenant(context.Background(), port.ProvisionTenantRequest{TenantID: "t"})
+			var de *domain.DomainError
+			require.ErrorAs(t, err, &de)
+			assert.Equal(t, want, de.Cause)
+		})
+	}
+}
+
+// CR-4 400/401/403 are contract or config bugs: not retried, not shown as an outage.
+func TestOrgMembership_CheckEligibility_RejectedRequestIsInternal(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
+		err := orgmembership.New(srv.URL, time.Second).CheckEligibility(context.Background(), "hash")
+		srv.Close()
+		var de *domain.DomainError
+		require.ErrorAs(t, err, &de)
+		assert.Equal(t, domain.ErrInternal, de.Cause, "status %d", status)
+	}
+}

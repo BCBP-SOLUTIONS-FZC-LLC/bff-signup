@@ -3,10 +3,8 @@ package service
 import (
 	"context"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/tracing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -36,7 +34,7 @@ func NewStatusService(
 type StatusResult struct {
 	SignupID        string
 	State           domain.HandoffState
-	Action          string   // "choose_slug" when State == action_required
+	Action          string   // choose_slug | resubmit | complete_payment when status is action_required
 	PollAfterMs     int      // set when State == provisioning
 	Message         string   // "workspace_setting_up" when tenant_pending
 	SlugSuggestions []string // non-empty when ChangeSlug hit a conflict (SB-4, A-3)
@@ -79,18 +77,14 @@ func (s *StatusService) GetStatus(ctx context.Context, sessionSignupID, pathSign
 			if err == nil && result != nil {
 				h.State = result.State
 				if result.State == domain.StateCompleted {
-					metrics.IncProvisioningSucceeded("trial", "resume") // LLD §11.2
+					metrics.IncProvisioningSucceeded(signupMode(h), "resume") // LLD §11.2
 				}
 			}
 		}
 	}
 
 	// Business attributes on the request span (LLD §11.3, O-03). IDs and state only.
-	trace.SpanFromContext(ctx).SetAttributes(
-		attribute.String("signup.id", h.SignupID),
-		attribute.String("tenant.id", h.TenantID),
-		attribute.String("handoff.state", string(h.State)),
-	)
+	tracing.Annotate(ctx, "signup.id", h.SignupID, "tenant.id", h.TenantID, "handoff.state", string(h.State))
 	return stateToStatus(h), nil
 }
 
@@ -130,7 +124,7 @@ func (s *StatusService) ChangeSlug(ctx context.Context, sessionSignupID, pathSig
 
 	h.State = result.State
 	if result.State == domain.StateCompleted {
-		metrics.IncProvisioningSucceeded("trial", "slug_change") // LLD §11.2
+		metrics.IncProvisioningSucceeded(signupMode(h), "slug_change") // LLD §11.2
 	}
 	sr := stateToStatus(h)
 	sr.SlugSuggestions = result.SlugSuggestions
@@ -146,6 +140,13 @@ func stateToStatus(h *domain.Handoff) *StatusResult {
 		r.Message = "workspace_setting_up"
 	case domain.StateSlugConflict:
 		r.Action = "choose_slug"
+	case domain.StatePaymentActionRequired:
+		// 3-D Secure pending: the browser completes it, then re-POSTs SB-5.
+		r.Action = "complete_payment"
+	case domain.StateAllocated, domain.StatePaymentPending, domain.StatePaymentConfirmed:
+		// Nothing runs in the background for these states: the last submit
+		// ended with 503 / 409 and only a resubmit (same body) moves them on.
+		r.Action = "resubmit"
 	}
 	return r
 }

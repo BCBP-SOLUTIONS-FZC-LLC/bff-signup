@@ -3,7 +3,10 @@ package http
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -24,13 +27,14 @@ type loggerAlias = gincommon.Logger
 type Handlers struct {
 	session             *service.SessionService
 	signup              *service.SignupService
-	paidSignup          *service.PaidSignupService // Phase 1.5 (LLD §19); nil when disabled
+	paidSignup          *service.PaidSignupService // SB-5 (LLD §19); always set, the route is gated by PAID_SIGNUP_ENABLED
 	status              *service.StatusService
 	catalog             port.Catalog
 	siteKey             string
 	policy              domain.PasswordPolicy
 	slugRules           domain.SlugRules
 	requestDeadline     time.Duration
+	paidRequestDeadline time.Duration // SB-5 only: covers Billing B-I1 (p99 12 s) + RP-2 + I-1
 	currentTermsVersion string
 	sessionTTLSecs      int
 	log                 loggerAlias
@@ -55,9 +59,19 @@ func NewHandlers(
 		status: status, catalog: catalog, siteKey: siteKey,
 		policy: policy, slugRules: slugRules,
 		requestDeadline: requestDeadline, currentTermsVersion: currentTermsVersion,
-		sessionTTLSecs: sessionTTLSecs,
-		log:            log,
+		paidRequestDeadline: requestDeadline,
+		sessionTTLSecs:      sessionTTLSecs,
+		log:                 log,
 	}
+}
+
+// WithPaidRequestDeadline sets the SB-5 deadline (PAID_REQUEST_DEADLINE_MS).
+// SB-5 waits for Billing, which takes far longer than the other routes.
+func (h *Handlers) WithPaidRequestDeadline(d time.Duration) *Handlers {
+	if d > 0 {
+		h.paidRequestDeadline = d
+	}
+	return h
 }
 
 // ── SB-1: GET /api/v1/signup/session ─────────────────────────────────────────
@@ -71,8 +85,8 @@ func NewHandlers(
 // @Tags         session
 // @Produce      json
 // @Success      200  {object}  SessionResponse
-// @Failure      429  {object}  ErrorResponse  "Too many session starts from this IP (Retry-After header, seconds)"
-// @Failure      503  {object}  ErrorResponse  "Valkey unavailable (fail-closed)"
+// @Failure      429  {object}  ProblemResponse  "Too many session starts from this IP (Retry-After header, seconds)"
+// @Failure      503  {object}  ProblemResponse  "Valkey unavailable (fail-closed)"
 // @Router       /session [get]
 func (h *Handlers) Session(c *gin.Context) {
 	clientIP := middleware.ClientIPFromContext(c)
@@ -122,13 +136,13 @@ func (h *Handlers) Session(c *gin.Context) {
 // @Param        body          body      TrialSignupRequest  true  "Signup form payload"
 // @Success      201  {object}  TrialSignupResponse  "Signup fully provisioned"
 // @Success      202  {object}  TrialSignupResponse  "Keycloak user created; tenant still provisioning — poll SB-3"
-// @Failure      400  {object}  ErrorResponse        "Validation failed (includes wrong Content-Type, unknown JSON fields)"
-// @Failure      401  {object}  ErrorResponse        "Session expired or missing"
-// @Failure      403  {object}  ErrorResponse        "CSRF token invalid or CAPTCHA failed"
-// @Failure      409  {object}  SlugTakenResponse    "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry"
-// @Failure      413  {object}  ErrorResponse        "Request body larger than 16 KiB"
-// @Failure      429  {object}  ErrorResponse        "Rate limit exceeded (Retry-After header, seconds)"
-// @Failure      503  {object}  ErrorResponse        "Dependency unavailable (Valkey, Turnstile, RP-1)"
+// @Failure      400  {object}  ProblemResponse  "Validation failed (includes wrong Content-Type, unknown JSON fields)"
+// @Failure      401  {object}  ProblemResponse  "Session expired or missing"
+// @Failure      403  {object}  ProblemResponse  "CSRF token invalid or CAPTCHA failed"
+// @Failure      409  {object}  ProblemResponse  "Slug already taken — submit SB-4 with a new slug; or INVALID_STATE (same signup already being processed) with retry_after_ms — retry"
+// @Failure      413  {object}  ProblemResponse  "Request body larger than 16 KiB"
+// @Failure      429  {object}  ProblemResponse  "Rate limit exceeded (Retry-After header, seconds)"
+// @Failure      503  {object}  ProblemResponse  "Dependency unavailable (Valkey, Turnstile, RP-1)"
 // @Security     SessionCookie
 // @Security     CSRFToken
 // @Router       /trial [post]
@@ -165,7 +179,7 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 		CaptchaToken:  req.CaptchaToken,
 		DefaultLocale: locale,
 		ClientIP:      middleware.ClientIPFromContext(c),
-		UserAgent:     truncateUserAgent(c.GetHeader("User-Agent")),
+		UserAgent:     termsUserAgent(c.GetHeader("User-Agent")),
 		Session:       sess,
 	})
 	if err != nil {
@@ -228,9 +242,9 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 // @Produce      json
 // @Param        signup_id  path      string  true  "Signup ID returned by SB-1"
 // @Success      200  {object}  StatusResponse
-// @Failure      401  {object}  ErrorResponse  "Session expired or missing"
-// @Failure      404  {object}  ErrorResponse  "Signup not found or does not belong to this session"
-// @Failure      429  {object}  ErrorResponse  "Too many status polls (Retry-After header, seconds)"
+// @Failure      401  {object}  ProblemResponse  "Session expired or missing"
+// @Failure      404  {object}  ProblemResponse  "Signup not found or does not belong to this session"
+// @Failure      429  {object}  ProblemResponse  "Too many status polls (Retry-After header, seconds)"
 // @Security     SessionCookie
 // @Router       /{signup_id}/status [get]
 func (h *Handlers) GetStatus(c *gin.Context) {
@@ -283,11 +297,11 @@ func (h *Handlers) GetStatus(c *gin.Context) {
 // @Param        body          body      SlugChangeRequest true  "New slug"
 // @Success      201  {object}  TrialSignupResponse  "Signup fully provisioned with new slug"
 // @Success      202  {object}  TrialSignupResponse  "I-1 still in progress — poll SB-3"
-// @Failure      400  {object}  ErrorResponse        "Slug validation failed"
-// @Failure      401  {object}  ErrorResponse        "Session expired or missing"
-// @Failure      403  {object}  ErrorResponse        "CSRF token invalid"
-// @Failure      404  {object}  ErrorResponse        "Signup not found or does not belong to this session"
-// @Failure      409  {object}  SlugTakenResponse    "New slug also taken — try again"
+// @Failure      400  {object}  ProblemResponse  "Slug validation failed"
+// @Failure      401  {object}  ProblemResponse  "Session expired or missing"
+// @Failure      403  {object}  ProblemResponse  "CSRF token invalid"
+// @Failure      404  {object}  ProblemResponse  "Signup not found or does not belong to this session"
+// @Failure      409  {object}  ProblemResponse  "New slug also taken — try again"
 // @Security     SessionCookie
 // @Security     CSRFToken
 // @Router       /{signup_id}/slug [post]
@@ -364,13 +378,32 @@ func stateToStatusString(state domain.HandoffState) string {
 		return "completed"
 	case domain.StateTenantPending:
 		return "provisioning"
-	case domain.StateSlugConflict:
-		return "action_required"
+	case domain.StateSlugConflict, domain.StatePaymentActionRequired,
+		domain.StateAllocated, domain.StatePaymentPending, domain.StatePaymentConfirmed:
+		return "action_required" // StatusResponse.action says which: choose_slug | complete_payment | resubmit
 	case domain.StateFailed:
 		return "failed"
 	default:
 		return "provisioning"
 	}
+}
+
+// termsUserAgent returns the User-Agent for terms_acceptance.user_agent in the
+// form RP-1/RP-2 accept (A-4, LLD §10.6): no control characters, trimmed, at
+// most 512 bytes of valid UTF-8, and never empty ("unknown" when the browser
+// sent none). An unaccepted value makes RP answer 400 — on SB-5 after payment.
+func termsUserAgent(ua string) string {
+	ua = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, ua))
+	ua = strings.TrimSpace(truncateUserAgent(ua))
+	if ua == "" {
+		return "unknown"
+	}
+	return ua
 }
 
 // truncateUserAgent trims the User-Agent to 512 bytes of valid UTF-8 as required
@@ -395,7 +428,7 @@ func truncateUserAgent(ua string) string {
 	return string(b)
 }
 
-// ── SB-5: POST /api/v1/signup/paid (Phase 1.5, LLD §19) ──────────────────────
+// ── SB-5: POST /api/v1/signup/paid (LLD §19) ──────────────────────────────────
 
 // SubmitPaid processes a direct paid signup (SB-5).
 // The route only exists when PAID_SIGNUP_ENABLED=true; otherwise the router
@@ -410,13 +443,15 @@ func truncateUserAgent(ua string) string {
 // @Param        X-CSRF-Token  header    string            true  "CSRF token from SB-1"
 // @Param        body          body      PaidSignupRequest true  "Paid signup payload"
 // @Success      201  {object}  PaidSignupResponse  "Signup fully provisioned"
-// @Success      202  {object}  PaidSignupResponse  "Identity created; tenant still provisioning — poll SB-3"
-// @Failure      400  {object}  ErrorResponse       "Validation failed"
-// @Failure      401  {object}  ErrorResponse       "Session expired or missing"
-// @Failure      403  {object}  ErrorResponse       "CSRF token invalid or CAPTCHA failed"
-// @Failure      409  {object}  SlugTakenResponse   "Slug already taken — submit SB-4 with a new slug"
-// @Failure      429  {object}  ErrorResponse       "Rate limit exceeded"
-// @Failure      503  {object}  ErrorResponse       "Dependency unavailable"
+// @Success      202  {object}  PaidSignupResponse  "Tenant still provisioning (status=provisioning, poll SB-3), or 3-D Secure needed (status=payment_action_required: complete action.client_secret, then re-POST the same body with a fresh captcha_token)"
+// @Failure      400  {object}  ProblemResponse  "Validation failed"
+// @Failure      401  {object}  ProblemResponse  "Session expired or missing"
+// @Failure      403  {object}  ProblemResponse  "CSRF token invalid or CAPTCHA failed"
+// @Failure      409  {object}  ProblemResponse  "SLUG_TAKEN (+ suggestions): resubmit SB-5 with a new slug if paid but not yet provisioned, else SB-4; INVALID_STATE: a payment is in progress, or details changed after payment"
+// @Failure      410  {object}  ProblemResponse  "CHARGE_EXPIRED — 3-D Secure not completed in time; start a new signup"
+// @Failure      422  {object}  ProblemResponse  "PAYMENT_DECLINED (+ decline_reason, top-level); use another payment method"
+// @Failure      429  {object}  ProblemResponse  "Rate limit exceeded"
+// @Failure      503  {object}  ProblemResponse  "Dependency unavailable; retry the same body after Retry-After"
 // @Security     SessionCookie
 // @Security     CSRFToken
 // @Router       /paid [post]
@@ -434,7 +469,7 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 
 	locale := acceptLocale(c)
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), h.requestDeadline)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.paidRequestDeadline)
 	defer cancel()
 
 	result, err := h.paidSignup.Submit(ctx, service.PaidSignupInput{
@@ -451,7 +486,7 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 		CaptchaToken:  req.CaptchaToken,
 		DefaultLocale: locale,
 		ClientIP:      middleware.ClientIPFromContext(c),
-		UserAgent:     truncateUserAgent(c.GetHeader("User-Agent")),
+		UserAgent:     termsUserAgent(c.GetHeader("User-Agent")),
 		Session:       sess,
 	})
 	if err != nil {
@@ -471,7 +506,28 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 		return
 	}
 
+	// Sliding session (I-02): re-issue the cookie so a 3-D Secure re-POST, which
+	// can come up to Billing's 30-minute window later, still has a session.
+	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.sessionTTLSecs)
+
 	switch result.State { //nolint:exhaustive
+	case domain.StatePaymentActionRequired:
+		// 3-D Secure: the browser authenticates with action.client_secret, then
+		// re-POSTs SB-5 with the same body and a fresh captcha_token (BL-OQ-8).
+		h.log.Info("signup.paid.payment_action_required", signupLogFields(c, "submit", "action_required", result.SignupID, "", string(result.State)))
+		resp := PaidSignupResponse{
+			SignupID:  result.SignupID,
+			Status:    "payment_action_required",
+			ExpiresAt: result.PaymentExpiresAt,
+		}
+		if result.PaymentAction != nil {
+			resp.Action = &PaymentAction{Type: result.PaymentAction.Type, ClientSecret: result.PaymentAction.ClientSecret}
+		}
+		c.JSON(http.StatusAccepted, resp)
+	case domain.StateFailed:
+		// A repeat SB-5 on a paid signup whose tenant step exhausted its window
+		// (the backstop may still finish it). Not "provisioning": nothing will poll it on.
+		c.JSON(http.StatusOK, PaidSignupResponse{SignupID: result.SignupID, Status: "failed"})
 	case domain.StateCompleted:
 		h.log.Info("signup.paid.submitted", signupLogFields(c, "submit", "success", result.SignupID, "", string(result.State)))
 		c.JSON(http.StatusCreated, PaidSignupResponse{

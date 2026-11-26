@@ -30,3 +30,8 @@ autoscaling:
   enabled: true
   minReplicas: 2
   maxReplicas: 5
+
+# Caller identity at L7 (mTLS principal) — LLD §10.1, BFF-1.
+istio:
+  authorizationPolicy:
+    enabled: true

@@ -216,6 +216,7 @@ func TestNoStoreHeaders_SetsHeaders(t *testing.T) {
 	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
 	assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
+	assert.Equal(t, "max-age=31536000; includeSubDomains", w.Header().Get("Strict-Transport-Security"))
 	assert.Equal(t, "strict-origin-when-cross-origin", w.Header().Get("Referrer-Policy"))
 }
 
@@ -414,4 +415,16 @@ func TestRequireValidatedSession_POST_WrongCSRF_Returns401(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil))
 	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// RP accepts terms_acceptance.user_agent only when non-empty, ≤ 512 bytes and
+// free of control characters; otherwise it answers 400 (after payment, on SB-5).
+func TestTermsUserAgent(t *testing.T) {
+	assert.Equal(t, "unknown", termsUserAgent(""))
+	assert.Equal(t, "unknown", termsUserAgent("  \t\r\n "))
+	assert.Equal(t, "Mozilla/5.0 x", termsUserAgent("Mozilla/5.0\x00\x07 x"))
+	assert.Equal(t, "Firefox", termsUserAgent("  Firefox  "))
+	long := strings.Repeat("a", 600)
+	assert.Len(t, termsUserAgent(long), 512)
+	assert.Equal(t, "ok", termsUserAgent("ok\xff"), "invalid UTF-8 dropped")
 }

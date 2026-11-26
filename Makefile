@@ -26,28 +26,46 @@ COVER_PKG_LIST := $(shell $(GO) list ./internal/... ./pkg/... | tr '\n' ',' | se
 # tagged files are always checked.
 ALL_TEST_TAGS := integration
 
+# golangci-lint: .golangci.yml is a v2 config. Use the installed binary when it
+# is v2 (CI installs v2.12.1); otherwise run CI's pinned version, so a local v1
+# install cannot fail every commit (.githooks/pre-commit runs make lint).
+GOLANGCI_LINT_VERSION := v2.12.1
+GOLANGCI_LINT := $(shell golangci-lint version 2>/dev/null | grep -qE 'version v?2\.' && echo golangci-lint || echo "$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)")
+
 # -----------------------------
 # SETUP
 # -----------------------------
 
 .PHONY: setup
-setup:
+setup: install-hooks
 	@test -f .env || cp .env-example .env
+	@echo "Environment ready (.env)"
+
+# -----------------------------
+# GIT HOOKS
+# -----------------------------
+
+.PHONY: install-hooks
+install-hooks:
 	@mkdir -p .git/hooks
 	@cp .githooks/pre-commit .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "Environment ready (.env)"
+	@cp .githooks/pre-push .git/hooks/pre-push
+	@chmod +x .git/hooks/pre-commit .git/hooks/pre-push
+	@echo "Installed git hooks"
 
 .PHONY: help
 help:
 	@echo "Available commands:"
-	@echo "  make setup            - copy .env-example to .env if missing; install pre-commit hook"
+	@echo "  make setup            - copy .env-example to .env if missing; install git hooks"
+	@echo "  make install-hooks    - install local git hooks (.githooks -> .git/hooks); also run by make setup"
 	@echo "  make tidy             - go mod tidy"
 	@echo "  make fmt              - go fmt ./..."
+	@echo "  make trivy            - build the image and Trivy-scan it like CI (CRITICAL/HIGH/UNKNOWN, fixed only, .trivyignore); run by .githooks/pre-push"
 	@echo "  make vet              - go vet (default build + every test build tag)"
 	@echo "  make lint             - run golangci-lint (default build + every test build tag)"
 	@echo "  make arch-lint        - enforce .go-arch-lint.yml component boundaries"
-	@echo "  make metrics-lint     - validate signup_bff_ metric naming rules"
+	@echo "  make metrics-lint     - observability standard: naming, labels, registry, rule references, inventory"
+	@echo "  make metrics-inventory - regenerate docs/observability/metric-registry.md"
 	@echo "  make test             - unit + integration tests (requires Docker for Valkey)"
 	@echo "  make test-ci          - test with race detector + coverage (used in CI)"
 	@echo "  make test-unit        - unit tests only (no Docker required)"
@@ -68,7 +86,6 @@ help:
 	@echo "  make fmt-check        - verify gofmt formatting (no changes applied)"
 	@echo "  make mod-verify       - go mod verify (check module download integrity)"
 	@echo "  make vuln-check       - govulncheck on internal and pkg packages"
-	@echo "  make install-hooks    - install local git hooks (.githooks -> .git/hooks)"
 	@echo "  make pin-base-images  - fetch SHA digests and pin Dockerfile base images"
 	@echo "  make godoc            - serve package docs locally via pkgsite"
 	@echo "  make clean            - remove build artefacts"
@@ -96,9 +113,9 @@ vet:
 
 .PHONY: lint
 lint:
-	@echo "Running linter..."
-	golangci-lint run ./...
-	golangci-lint run --build-tags=$(ALL_TEST_TAGS) ./...
+	@echo "Running linter ($(GOLANGCI_LINT))..."
+	$(GOLANGCI_LINT) run ./...
+	$(GOLANGCI_LINT) run --build-tags=$(ALL_TEST_TAGS) ./...
 
 # arch-lint: enforce .go-arch-lint.yml component boundaries — the same script
 # CI runs (validate-test.yml).
@@ -106,13 +123,23 @@ lint:
 arch-lint:
 	bash .github/scripts/arch-lint.sh
 
-# metrics-lint: validate bff_signup_* metric naming conventions — all counters
-# end with _total, histograms with _seconds, no high-cardinality labels,
-# adapter instrumentation enforced, label vocabulary checked.
+# metrics-lint: the Enterprise Platform Observability Standard checks CI runs.
+#   check-metric-naming.sh   bff_signup_* naming, suffixes, labels, adapter instrumentation
+#   metrics-registry-lint.sh local-registry Proposed metrics are never alert/SLO sources
+#   metricslint.sh           platform-gincommon's metricslint (scrape check + rule refs),
+#                            rule references exist, Helm/flat rules in sync, Proposed-metric
+#                            alerts labelled, metric inventory up to date
 .PHONY: metrics-lint
 metrics-lint:
 	bash .github/scripts/check-metric-naming.sh
 	bash .github/scripts/metrics-registry-lint.sh
+	bash .github/scripts/metricslint.sh
+
+# metrics-inventory: regenerate docs/observability/metric-registry.md from the
+# pinned registry and a real scrape (metrics-lint fails when it is stale).
+.PHONY: metrics-inventory
+metrics-inventory:
+	METRICS_INVENTORY_WRITE=1 bash .github/scripts/metricslint.sh
 
 # log-sink-lint: enforce the Enterprise Platform Observability Standard requirement
 # that all logs, metrics, and traces pass through platform-gincommon only.
@@ -343,13 +370,6 @@ swag-check:
 	@rm -rf docs/swagger.bak
 	@echo "Swagger docs are up to date."
 
-.PHONY: install-hooks
-install-hooks:
-	@mkdir -p .git/hooks
-	@cp .githooks/pre-commit .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "Installed git hooks"
-
 # godoc: serve package documentation locally using pkgsite.
 .PHONY: godoc
 godoc:
@@ -381,3 +401,20 @@ pin-base-images:
 clean:
 	rm -rf bin .coverage
 	rm -f coverage.out coverage.html *.coverprofile
+
+# -----------------------------
+# TRIVY (same check as ci.yml's "Trivy CVE scan"; run by .githooks/pre-push)
+# -----------------------------
+
+TRIVY_IMAGE ?= bff-signup-trivy
+GO_PRIVATE_TOKEN ?= $(shell gh auth token 2>/dev/null)
+export GO_PRIVATE_TOKEN
+
+.PHONY: trivy
+trivy:
+	@command -v trivy >/dev/null || { echo "trivy not found (brew install trivy)"; exit 1; }
+	@test -n "$$GO_PRIVATE_TOKEN" || { echo "GO_PRIVATE_TOKEN is empty: export it or run 'gh auth login'"; exit 1; }
+	docker build --platform linux/amd64 \
+	  --secret id=go_private_token,env=GO_PRIVATE_TOKEN \
+	  -t $(TRIVY_IMAGE) .
+	trivy image --severity CRITICAL,HIGH,UNKNOWN --ignore-unfixed --ignorefile .trivyignore --exit-code 1 $(TRIVY_IMAGE)

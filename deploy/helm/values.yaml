@@ -1,6 +1,8 @@
 replicaCount: 2
 
 image:
+  # digest (sha256:…) pins the exact image; when set it is used instead of tag.
+  digest: ""
   repository: ghcr.io/bcbp-solutions-fzc-llc/bff-signup
   pullPolicy: IfNotPresent
   tag: ""  # overridden by CI to the git SHA
@@ -39,22 +41,26 @@ env:
   APP_PORT: "8080"
   METRICS_PORT: "9090"
   PUBLIC_HOST: "signup.bcbpsolutions.com"
-  REQUEST_DEADLINE_MS: "2500"
+  REQUEST_DEADLINE_MS: "5000"      # ≥ eligibility + RP-1 + 2×I-1 timeouts (config.Validate)
   PBKDF2_ITERATIONS: "210000"
   RATE_SIGNUPS_PER_IP_PER_HOUR: "3"
   RATE_ATTEMPTS_PER_EMAIL_PER_DAY: "5"
   RATE_SESSIONS_PER_IP_PER_HOUR: "20"
   RATE_POLLS_PER_SESSION_PER_MIN: "60"
-  RP_TIMEOUT_MS: "900"
+  RP_TIMEOUT_MS: "2000"            # RP-1; RP publishes p95 ≤ 1.5 s
+  RP2_TIMEOUT_MS: "8000"           # RP-2; RP publishes p95 ≤ 4 s
   I1_TIMEOUT_MS: "300"
   ELIGIBILITY_TIMEOUT_MS: "150"
   TURNSTILE_TIMEOUT_MS: "300"
   REALM_PROVISIONER_BASE_URL: "http://iam-realm-provisioner.iam.svc.cluster.local:8080"
   ORG_MEMBERSHIP_BASE_URL: "http://iam-org-membership.iam.svc.cluster.local:8080"
-  # Phase 1 paid signup activation (SGN-2) — only after SRE-3 (Core migration 000004) is deployed
+  # Direct paid signup (SGN-2, BL-OQ-8). Flip PAID_SIGNUP_ENABLED per environment only at
+  # Billing go-live step 4 (Billing LLD §18.7): after SRE-3 is deployed, Billing runs with
+  # FEATURE_DIRECT_SIGNUP=true, Pact is green and the Test-Clock E2E has passed in staging.
   PAID_SIGNUP_ENABLED: "false"
-  BILLING_BASE_URL: ""           # set to Billing service cluster URL when enabling
-  BILLING_TIMEOUT_MS: "5000"
+  BILLING_BASE_URL: "http://commercial-billing.billing.svc.cluster.local:8080"
+  BILLING_TIMEOUT_MS: "15000"        # B-I1 p95 6 s, p99 12 s; config rejects < 15000 when enabled
+  PAID_REQUEST_DEADLINE_MS: "30000"  # SB-5 only: B-I1 + RP-2 + 2×I-1 (other routes keep REQUEST_DEADLINE_MS)
   CAPTCHA_EXPECTED_HOSTNAME: "signup.bcbpsolutions.com"
   TERMS_CURRENT_VERSION: "2026-09"
 
@@ -69,12 +75,24 @@ networkPolicy:
       kubernetes.io/metadata.name: monitoring
     podSelector:
       app.kubernetes.io/name: prometheus
+  # Egress is scoped to real destinations (LLD §10.1), not just ports:
+  egress:
+    # :8080 — Realm Provisioner, Org & Membership, Catalog (iam) and Billing (billing).
+    serviceNamespaces: [iam, billing]
+    # :6379 — ElastiCache Valkey. Set to the cache subnet CIDR(s) per environment.
+    valkeyCIDRs: ["10.0.0.0/8"]
+    # :4317 — OTel collector.
+    otelNamespace: observability
+    # :15012 — istiod (sidecar xDS / certificates). Empty to omit (no mesh).
+    istioControlPlaneNamespace: istio-system
+    # :443 — public internet only (Cloudflare Turnstile); private ranges excluded.
+    internetHTTPS: true
 
 # Istio ServiceEntry for Turnstile outbound — required when the mesh runs
 # outboundTrafficPolicy: REGISTRY_ONLY (LLD §10.1, §13.1 G-6).
 # Set enabled: true and turnstileHost when REGISTRY_ONLY is enforced in prod.
 serviceEntry:
-  enabled: false   # set true in prod if REGISTRY_ONLY is enforced
+  enabled: false   # true in staging/prod (REGISTRY_ONLY); template: templates/serviceentry.yaml
   turnstileHost: challenges.cloudflare.com
 
 serviceMonitor:
@@ -89,7 +107,7 @@ serviceMonitor:
 # mode is active in the bff namespace (LLD §10.1, BFF-1).
 istio:
   authorizationPolicy:
-    enabled: false   # set true in staging/prod once Istio is confirmed
+    enabled: false   # true in staging/prod (values-staging.yaml, values-prod.yaml)
 
 # Ingress — Envoy Gateway HTTPRoute for signup.bcbpsolutions.com (LLD §13.1, BFF-4).
 # Set enabled: true and configure gateway.name once SRE provisions the route.
@@ -99,6 +117,12 @@ ingress:
     name: ""           # required — name of the Envoy Gateway resource
     namespace: ""      # optional — defaults to Release.Namespace
     sectionName: ""    # optional — target a specific listener (e.g. "https")
+  # Per-route request timeouts on the Envoy Gateway route. Each must exceed the
+  # BFF's own deadline for that route, or Envoy cuts the request off first
+  # (Envoy's default route timeout is 15 s).
+  timeouts:
+    paid: "35s"      # POST /api/v1/signup/paid: PAID_REQUEST_DEADLINE_MS (30 s) + margin
+    default: "10s"   # other /api/v1/signup routes: REQUEST_DEADLINE_MS (5 s) + margin
 
 # Secrets — provided by External Secrets Operator from OpenBao in prod (LLD §10.7, §12).
 # Set existingSecret to the External-Secrets-managed Secret name in prod.

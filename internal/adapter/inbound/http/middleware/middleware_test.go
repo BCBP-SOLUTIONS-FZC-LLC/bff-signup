@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -161,4 +162,26 @@ func TestSIDFromContext_Missing_ReturnsEmpty(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// ClientIP accepts only a well-formed x-envoy-external-address, in canonical
+// form: the value keys the per-IP rate limit and is sent to Turnstile and RP.
+func TestClientIP_ValidatesHeader(t *testing.T) {
+	for header, want := range map[string]string{
+		"203.0.113.7":               "203.0.113.7",
+		"2001:DB8::0001":            "2001:db8::1",
+		"not-an-ip":                 "192.0.2.1", // falls back to the peer
+		"203.0.113.7, 198.51.100.1": "192.0.2.1",
+		strings.Repeat("9", 4096):   "192.0.2.1",
+	} {
+		r := gin.New()
+		var got string
+		r.Use(ClientIP())
+		r.GET("/", func(c *gin.Context) { got = ClientIPFromContext(c) })
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		req.Header.Set("x-envoy-external-address", header)
+		r.ServeHTTP(httptest.NewRecorder(), req)
+		assert.Equal(t, want, got, "header %.20q", header)
+	}
 }

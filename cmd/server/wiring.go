@@ -37,7 +37,7 @@ func buildBilling(cfg *config.Config) port.BillingClient {
 // from a shared client created by valkeystore.NewClient.
 // That constructor sets the standard tight timeouts (100ms dial / 50ms read+write)
 // matching the pattern used in iam-org-membership/internal/adapter/outbound/valkey.
-func buildValkeyStores(valkeyURL string, sessionTTL time.Duration) (
+func buildValkeyStores(valkeyURL string, sessionTTL, lockTTL time.Duration) (
 	sessions port.SessionStore,
 	handoffs port.HandoffStore,
 	limiter port.RateLimiter,
@@ -45,14 +45,14 @@ func buildValkeyStores(valkeyURL string, sessionTTL time.Duration) (
 ) {
 	rdb = valkeystore.NewClient(valkeyURL)
 	sessions = valkeystore.NewSessionStore(rdb, sessionTTL)
-	handoffs = valkeystore.NewHandoffStore(rdb)
+	handoffs = valkeystore.NewHandoffStore(rdb).WithLockTTL(lockTTL)
 	limiter = valkeystore.NewRateLimiter(rdb)
 	return
 }
 
 // buildRealmProvisioner constructs the RP-1 HTTP client.
 func buildRealmProvisioner(cfg *config.Config) *realmprovisioner.Client {
-	return realmprovisioner.New(cfg.RealmProvisionerURL, cfg.RPTimeout())
+	return realmprovisioner.New(cfg.RealmProvisionerURL, cfg.RPTimeout()).WithDirectTimeout(cfg.RP2Timeout())
 }
 
 // buildOrgMembership constructs the I-1 + trial-eligibility HTTP client.

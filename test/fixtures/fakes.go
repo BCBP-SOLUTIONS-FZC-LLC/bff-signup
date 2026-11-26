@@ -296,11 +296,20 @@ func (f *FakeOrgMembership) ProvisionTenant(_ context.Context, req port.Provisio
 // ── FakeBillingClient ─────────────────────────────────────────────────────────
 
 // FakeBillingClient returns a fixed charge response or a scripted error.
+// When Script is non-empty, each call consumes its next step instead (e.g. a
+// 3-D Secure sequence: ActionRequired, then Confirmed).
 type FakeBillingClient struct {
-	Resp  *port.ChargeResponse
-	Err   error
-	mu    sync.Mutex
-	Calls []port.ChargeRequest
+	Resp   *port.ChargeResponse
+	Err    error
+	Script []FakeBillingStep
+	mu     sync.Mutex
+	Calls  []port.ChargeRequest
+}
+
+// FakeBillingStep is one scripted AuthorizeAndCharge result.
+type FakeBillingStep struct {
+	Resp *port.ChargeResponse
+	Err  error
 }
 
 func NewFakeBillingClient(subscriptionID string) *FakeBillingClient {
@@ -313,6 +322,11 @@ func (f *FakeBillingClient) AuthorizeAndCharge(_ context.Context, req port.Charg
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, req)
+	if len(f.Script) > 0 {
+		step := f.Script[0]
+		f.Script = f.Script[1:]
+		return step.Resp, step.Err
+	}
 	return f.Resp, f.Err
 }
 
@@ -374,10 +388,12 @@ func (f *FakeIDGenerator) NewUUIDv7() string { return f.UUIDv7 }
 // FakePasswordHasher returns a deterministic seed without running PBKDF2
 // (tests don't need CPU-intensive hashing).
 type FakePasswordHasher struct {
-	Err error
+	Err   error
+	Calls int // number of Hash calls (PBKDF2 is the expensive step)
 }
 
 func (f *FakePasswordHasher) Hash(_ string) (*port.HashedPasswordSeed, error) {
+	f.Calls++
 	if f.Err != nil {
 		return nil, f.Err
 	}

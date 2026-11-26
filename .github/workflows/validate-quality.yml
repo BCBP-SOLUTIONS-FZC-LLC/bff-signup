@@ -122,6 +122,13 @@ jobs:
       - name: Metrics registry lint (Proposed metrics must not be alerting/SLO sources)
         run: bash .github/scripts/metrics-registry-lint.sh
 
+      # platform-gincommon's own metricslint (registry compliance, label
+      # vocabulary, required/prohibited labels, rule references) plus the
+      # bff-signup checks: referenced metrics exist, Helm and flat rules agree,
+      # Proposed-metric alerts are labelled, the metric inventory is current.
+      - name: Observability standard lint (metricslint)
+        run: bash .github/scripts/metricslint.sh
+
       - name: Observability sink lint (all logs/metrics/traces must pass through platform-gincommon)
         run: bash .github/scripts/check-log-sink.sh
 

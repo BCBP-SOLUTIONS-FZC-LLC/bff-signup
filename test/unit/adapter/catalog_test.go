@@ -27,9 +27,12 @@ func TestCatalogClient_Plans_HappyPath(t *testing.T) {
 		{Code: domain.PlanPro, Name: "Pro", TrialDays: 14},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v1/plans", r.URL.Path)
+		assert.Equal(t, "/api/v1/internal/plans", r.URL.Path, "CAT-I2 internal route")
+		assert.Equal(t, "iam-system", r.Header.Get("x-tenant-roles"))
+		assert.Equal(t, "00000000-0000-0000-0000-0000000000a1", r.Header.Get("x-user-id"))
+		assert.NotEmpty(t, r.Header.Get("x-tenant-id"))
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"plans": want})
+		_ = json.NewEncoder(w).Encode(catalogWire(want))
 	}))
 	defer srv.Close()
 
@@ -45,7 +48,7 @@ func TestCatalogClient_Plans_CacheHit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"plans": catalogFallback()})
+		_ = json.NewEncoder(w).Encode(catalogWire(catalogFallback()))
 	}))
 	defer srv.Close()
 
@@ -97,7 +100,7 @@ func TestCatalogClient_Plans_StaleCache_ReturnsLastGoodCopy(t *testing.T) {
 		calls++
 		if calls == 1 {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"plans": firstPlans})
+			_ = json.NewEncoder(w).Encode(catalogWire(firstPlans))
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -130,4 +133,46 @@ func TestCatalogClient_Plans_DecodeError_ReturnsFallback(t *testing.T) {
 	plans, err := c.Plans(context.Background())
 	require.NoError(t, err, "catalog client must be fail-open on decode error")
 	assert.Equal(t, fb, plans, "fallback must be returned when decode fails")
+}
+
+// catalogWire renders plans in Catalog Admin's CAT-I2 shape
+// ({plans: [{code, display_name, trial_duration_days, ...}], record_versions}).
+func catalogWire(plans []domain.PlanInfo) map[string]any {
+	items := make([]map[string]any, 0, len(plans))
+	for _, p := range plans {
+		items = append(items, map[string]any{
+			"code": string(p.Code), "display_name": p.Name, "trial_duration_days": p.TrialDays,
+			"api_rate_limit_rps": 10, "sso_enabled": false,
+		})
+	}
+	return map[string]any{"plans": items, "record_versions": map[string]int{}}
+}
+
+func TestCatalogClient_Plans_MapsWireShapeAndDropsUnsellableCodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(catalogWire([]domain.PlanInfo{
+			{Code: domain.PlanPro, Name: "Pro", TrialDays: 30},
+			{Code: "trial", Name: "Trial", TrialDays: 14},
+		}))
+	}))
+	defer srv.Close()
+
+	plans, err := catalog.New(srv.URL, time.Second, time.Minute, catalogFallback()).Plans(context.Background())
+	require.NoError(t, err)
+	require.Len(t, plans, 1, `"trial" is never offered as a plan (SB-INV-8)`)
+	assert.Equal(t, domain.PlanInfo{Code: domain.PlanPro, Name: "Pro", TrialDays: 30}, plans[0])
+}
+
+func TestCatalogClient_Plans_NoSellablePlansFallsBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(catalogWire(nil))
+	}))
+	defer srv.Close()
+
+	fb := catalogFallback()
+	plans, err := catalog.New(srv.URL, time.Second, time.Minute, fb).Plans(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, fb, plans)
 }

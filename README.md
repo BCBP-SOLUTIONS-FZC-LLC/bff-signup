@@ -1,27 +1,27 @@
 # bff-signup
 
-Public trial-signup BFF for the XpertPMS platform — the only internet-facing service that accepts unauthenticated requests.
+Public signup BFF (trial and direct-paid) for the XpertPMS platform — the only internet-facing service that accepts unauthenticated requests.
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup`  
-**Module:** Go 1.26.10 · private module · pre-production (see [`VERSIONING.md`](VERSIONING.md))
+**Module:** Go 1.26.11 · private module · pre-production (see [`VERSIONING.md`](VERSIONING.md))
 
 ---
 
 ## Mental model
 
-This service is the **public onboarding intake** for self-service trial signups. It enforces abuse controls (CAPTCHA, rate limiting, CSRF), validates all inputs, hashes the password into Keycloak's format, and orchestrates the provisioning handoff across two IAM services.
+This service is the **public onboarding intake** for self-service signups: free trial (SB-2) and direct paid (SB-5). It enforces abuse controls (CAPTCHA, rate limiting, CSRF), validates all inputs, hashes the password into Keycloak's format, and orchestrates the provisioning handoff across two IAM services (and, for paid signups, Billing).
 
 | Concern | Owner |
 |---|---|
 | Trial signup form API (SB-1…SB-4) | **This service** |
-| Direct paid signup (SB-5) | **This service** (stub; activates with `PAID_SIGNUP_ENABLED=true`) |
+| Direct paid signup (SB-5) | **This service** — real Billing B-I1 adapter; `/paid` returns `404` until `PAID_SIGNUP_ENABLED=true` (Billing go-live step 4, LLD §19.5) |
 | Abuse controls (CAPTCHA, rate limits, CSRF, WAF) | **This service** + ALB |
 | Password hashing (PBKDF2-SHA512) | **This service** — authoritative at signup |
-| Keycloak user creation | Realm Provisioner (RP-1) |
-| Tenant row creation, one-trial ledger | Org & Membership (I-1, eligibility) |
+| Keycloak user creation | Realm Provisioner (RP-1 trial, RP-2 paid) |
+| Tenant row creation, one-trial ledger, slug lookup | Org & Membership (I-1, eligibility, PUB-1) |
 | Session, handoff, rate-limit counters | Ephemeral Valkey (no DB) |
 | Login, tokens, MFA, email verification | Keycloak (built-in flows) |
-| Billing, subscriptions | Billing service (Phase 1.5 — stub wired, route reserved; see §19 LLD) |
+| Charging, subscriptions | Billing service — B-I1 authorize-and-charge (LLD §19) |
 | Signup page UI | Web frontend app |
 
 **This service owns no durable business data.** All Valkey state expires within 24 hours. There is nothing to erase on a GDPR request.
@@ -34,7 +34,7 @@ The IAM internal routes (`/api/v1/internal/…`) can create Keycloak users and t
 
 - Any internet client could call IAM internals directly — no CAPTCHA, no rate limiting, no CSRF.
 - The password would travel in plain text across the network instead of being hashed at the edge.
-- The multi-step provisioning handoff (eligibility → RP-1 → I-1) would be duplicated across every form implementation.
+- The multi-step provisioning handoff (eligibility → PUB-1 → RP-1 → I-1, or Billing → PUB-1 → RP-2 → I-1) would be duplicated across every form implementation.
 
 This service acts as the **single, auditable gate** between the public internet and IAM provisioning internals.
 
@@ -54,7 +54,7 @@ Metrics: `GET /metrics` on port 9090 (monitoring namespace only).
 | SB-2 | `POST /api/v1/signup/trial` | Cookie + `X-CSRF-Token` | Submit trial form; runs CAPTCHA → rate limit → validate → hash → provision |
 | SB-3 | `GET /api/v1/signup/{signup_id}/status` | Cookie (session-bound) | Poll provisioning status; resumes I-1 if `tenant_pending` |
 | SB-4 | `POST /api/v1/signup/{signup_id}/slug` | Cookie + `X-CSRF-Token` | Pick a new slug after `409 slug_taken`; retries I-1 |
-| SB-5 | `POST /api/v1/signup/paid` | Cookie + `X-CSRF-Token` | Submit direct paid form (Phase 1.5); returns `404` until `PAID_SIGNUP_ENABLED=true` |
+| SB-5 | `POST /api/v1/signup/paid` | Cookie + `X-CSRF-Token` | Submit direct paid form: CAPTCHA → rate limit → validate → hash → Billing B-I1 → PUB-1 → RP-2 → I-1; `202 payment_action_required` for 3-D Secure; `404` until `PAID_SIGNUP_ENABLED=true` |
 
 ### SB-1 response shape
 
@@ -95,13 +95,30 @@ Metrics: `GET /metrics` on port 9090 (monitoring namespace only).
 |---|---|
 | `201 Created` | Provisioning complete. `{status:"completed", next:"check_email"}` |
 | `202 Accepted` | RP-1 done, I-1 still in progress. Poll SB-3. `{status:"provisioning", poll_after_ms:2000}` |
-| `409 slug_taken` | Slug owned by another tenant. `{signup_id, suggestions:[]}` — submit SB-4 to continue |
+| `409 SLUG_TAKEN` | Slug owned by another tenant. `{signup_id, suggestions:[]}` — if the handoff reached I-1 (`slug_conflict`), submit SB-4; if the PUB-1 pre-check caught it (no account created yet), resubmit SB-2 with the new slug |
+
+### SB-5 request shape
+
+SB-2's fields plus `seats` (≥ 1) and `payment_token` (the payment provider's browser token, `pm_…`; no card data ever reaches the BFF).
+
+### SB-5 responses
+
+| Status | Meaning |
+|---|---|
+| `201 Created` | Charged and fully provisioned. `{status:"completed", next:"check_email"}` |
+| `202 Accepted` | `{status:"provisioning", poll_after_ms:2000}` — poll SB-3; or `{status:"payment_action_required", action:{type:"3ds", client_secret}, expires_at}` — complete 3-D Secure with the provider's JS, then re-POST the **same body** with a fresh `captcha_token` |
+| `409` | `SLUG_TAKEN` (resubmit SB-5 with a new slug if paid but not yet provisioned, else SB-4); `INVALID_STATE` (a payment is in progress, or details changed after payment) |
+| `410 CHARGE_EXPIRED` | 3-D Secure not completed within 30 min — start again |
+| `422 PAYMENT_DECLINED` | `decline_reason` — ask for another payment method |
+| `503` | Billing or another dependency unavailable — resubmit the same body after `Retry-After` (the same `tenant_id` and Billing key are reused, so nothing is charged twice) |
+
+See LLD §19 for the Billing contract, retries and the go-live order.
 
 ---
 
 ## Validation rules
 
-All validation runs server-side before any external call.
+All validation runs server-side, after CAPTCHA and before any internal service call or password hashing.
 
 | Field | Rule |
 |---|---|
@@ -119,31 +136,37 @@ All validation runs server-side before any external call.
 
 ### Error response shape
 
+Errors are RFC 9457 problem details (`application/problem+json`). Extra details are top-level members.
+
 ```json
 {
-  "error": "validation_failed",
+  "type": "…",
+  "title": "Bad Request",
   "status": 400,
-  "request_id": "req-xyz",
-  "details": { "fields": { "admin_email": "admin_email.invalid" } }
+  "detail": "admin_email is invalid",
+  "errorCode": "VALIDATION_FAILED",
+  "traceId": "…"
 }
 ```
 
 ### Error codes
 
-| `error` | HTTP | Meaning |
+| `errorCode` | HTTP | Meaning |
 |---|---|---|
-| `validation_failed` | 400 | One or more fields invalid |
-| `session_expired` | 401 | Missing or expired session cookie |
-| `csrf_invalid` | 403 | Wrong CSRF token or Origin header |
-| `captcha_failed` | 403 | Turnstile rejected the token |
-| `signup_not_found` | 404 | Unknown `signup_id` or not this session |
-| `email_unavailable` | 409 | Email already registered in Keycloak |
-| `trial_not_eligible` | 409 | Email has already used a free trial |
-| `slug_taken` | 409 | Slug owned by another tenant (+ `suggestions[]`) |
-| `invalid_state` | 409 | Action invalid for current provisioning state |
-| `rate_limited` | 429 | Rate limit exceeded (+ `Retry-After`) |
-| `internal_error` | 500 | BFF bug or IAM contract mismatch |
-| `dependency_unavailable` | 503 | Valkey, Turnstile, eligibility, or RP-1 unavailable |
+| `VALIDATION_FAILED` | 400 | One or more fields invalid |
+| `SESSION_EXPIRED` | 401 | Missing or expired session cookie |
+| `CSRF_INVALID` | 403 | Wrong CSRF token or Origin header |
+| `CAPTCHA_FAILED` | 403 | Turnstile rejected the token |
+| `SIGNUP_NOT_FOUND` | 404 | Unknown `signup_id` or not this session |
+| `EMAIL_UNAVAILABLE` | 409 | Email already registered in Keycloak |
+| `TRIAL_NOT_ELIGIBLE` | 409 | Email has already used a free trial |
+| `SLUG_TAKEN` | 409 | Slug owned by another tenant (+ `suggestions[]`) |
+| `INVALID_STATE` | 409 | Action invalid for the current provisioning state, or details changed (`reason: details_changed`) |
+| `CHARGE_EXPIRED` | 410 | SB-5: 3-D Secure not completed within 30 min |
+| `PAYMENT_DECLINED` | 422 | SB-5: payment declined (+ `decline_reason`) |
+| `RATE_LIMITED` | 429 | Rate limit exceeded (+ `Retry-After`) |
+| `INTERNAL_ERROR` | 500 | BFF bug, or an IAM/Billing contract mismatch |
+| `DEPENDENCY_UNAVAILABLE` | 503 | Valkey, Turnstile, eligibility, RP-1/RP-2 or Billing unavailable (+ `Retry-After` when known) |
 
 ---
 
@@ -151,12 +174,12 @@ All validation runs server-side before any external call.
 
 | Scope | Limit | Window |
 |---|---|---|
-| New signups per IP | 3 | 1 hour |
+| New signups per IP (SB-2, SB-5) | 3 | 1 hour |
 | Attempts per email | 5 | 24 hours |
 | Session starts per IP | 20 | 1 hour |
 | Status polls per session | 60 | 1 minute |
 
-Counters increment **after** CAPTCHA passes — a real user failing a CAPTCHA challenge does not burn an attempt. Valkey unavailable → `503` (fail-closed, no counters = no rate limiting).
+Counters increment **after** CAPTCHA passes — a real user failing a CAPTCHA challenge does not burn an attempt. Resuming an existing signup (including an SB-5 3-D Secure re-POST) does not count. All limits are set by `RATE_*` env vars. Valkey unavailable → `503` (fail-closed, no counters = no rate limiting).
 
 ---
 
@@ -172,20 +195,21 @@ bff-signup/
 │   │   ├── port/        ← All port interfaces
 │   │   └── service/     ← Session, Signup, PaidSignup, HandoffOrchestrator, Status
 │   └── adapter/
-│       ├── inbound/http/   ← Gin router, handlers (SB-1…5), middleware
-│       └── outbound/       ← Valkey, RP-1, RP-2, O&M, Turnstile, Catalog, PBKDF2 hasher
+│       ├── inbound/http/   ← Gin router, handlers (SB-1…5), RFC 9457 error mapping, middleware
+│       └── outbound/       ← Valkey, RP-1/RP-2, O&M (I-1, eligibility, PUB-1), Billing (B-I1), Turnstile, Catalog, PBKDF2 hasher, metrics
 ├── pkg/signupctx/       ← SignupContext{Session, ClientIP}
-├── test/                ← All tests (unit, integration, fixtures)
-├── deploy/helm/         ← Helm chart (dev/staging/prod values)
-└── docs/lld/            ← LLD v0.6 + open questions + action tracker
+├── test/                ← unit, integration (Valkey), e2e (in-process), fixtures
+├── deploy/helm/         ← Helm chart (dev/staging/prod values); deploy/monitoring/ alerts + dashboard
+└── docs/                ← LLD v1.3, architecture diagrams, observability, generated Swagger
 ```
 
-**Dependency rule:** `domain ← port ← service ← adapter ← cmd`. Enforced by `go-arch-lint`.
+**Dependency rule:** `domain ← port ← service ← adapter ← cmd`, with one exception: `core/service` may import the metrics package. Enforced by `go-arch-lint` (`.go-arch-lint.yml`).
 
 ### Provisioning handoff
 
 ```
-SB-2: CAPTCHA → rate-limit → validate → hash → eligibility check → RP-1 → I-1
+SB-2: CAPTCHA → rate-limit → validate → hash → eligibility → PUB-1 pre-check → RP-1 → I-1
+SB-5: CAPTCHA → rate-limit → validate → hash → Billing B-I1 → PUB-1 pre-check → RP-2 → I-1
          ↓ I-1 fails after retries
 SB-3: poll → resume I-1 (15-min window) → O&M backstop on browser abandon
          ↓ slug conflict
@@ -198,31 +222,31 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full sequence diagrams and the handof
 
 | Service | Operation | Path | Protocol | Timeout | Metric label | Phase |
 |---|---|---|---|---|---|---|
-| **Realm Provisioner** | RP-1 provision-trial | `POST /internal/tenants/provision-trial` | mTLS (Istio) | 900 ms | `realm_provisioner` | 1 |
-| **Realm Provisioner** | RP-2 provision-direct (stub) | `POST /internal/tenants/provision-direct` | mTLS (Istio) | 900 ms | `realm_provisioner` | 1.5 |
-| **Org & Membership** | I-1 provision-tenant | `POST /internal/tenants` | mTLS (Istio) | 300 ms | `org_membership` | 1 |
-| **Org & Membership** | Eligibility check (CR-4) | `POST /internal/trial-eligibility` | mTLS (Istio) | 150 ms | `org_membership` | 1 |
-| **Org & Membership** | PUB-1 slug pre-check | `GET /public/tenants/resolve` | mTLS (Istio) | 300 ms | `org_membership` | 1 |
-| **Billing** | AuthorizeAndCharge (stub) | TBD | mTLS (Istio) | 5000 ms | — | 1.5 |
+| **Realm Provisioner** | RP-1 provision-trial | `POST /api/v1/internal/tenants/provision-trial` | mTLS (Istio) | 2000 ms (`RP_TIMEOUT_MS`; RP p95 ≤ 1.5 s) | `realm_provisioner` | Trial |
+| **Realm Provisioner** | RP-2 provision-direct | `POST /api/v1/internal/tenants/provision-direct` | mTLS (Istio) | 8000 ms (`RP2_TIMEOUT_MS`; RP p95 ≤ 4 s) | `realm_provisioner` | Paid |
+| **Org & Membership** | I-1 provision-tenant | `POST /api/v1/internal/tenants` | mTLS (Istio) | 300 ms | `org_membership` | Both |
+| **Org & Membership** | Eligibility check (CR-4) | `POST /api/v1/internal/trial-eligibility` | mTLS (Istio) | 150 ms | `org_membership` | Trial |
+| **Org & Membership** | PUB-1 slug pre-check | `GET /api/v1/public/tenants/resolve` | mTLS (Istio) | 300 ms | `org_membership` | Both |
+| **Billing** | B-I1 authorize-and-charge | `POST /api/v1/internal/subscriptions/authorize-and-charge` | mTLS (Istio) | 15000 ms (≥ 15000 enforced when enabled) | `billing` | Paid |
 | **Cloudflare Turnstile** | CAPTCHA siteverify | `POST /turnstile/v0/siteverify` | HTTPS (internet) | 300 ms | `turnstile` | 1 |
 | **Valkey** | Session / handoff / rate-limit | key-value ops | TLS AUTH | 50 ms | — | 1 |
-| **Catalog / Admin Config** | Plan list | `GET /internal/plans` | mTLS (Istio) | 3 s (5-min cache) | `catalog` | 1 (optional) |
+| **Catalog / Admin Config** | Plan list | `GET /api/v1/plans` | mTLS (Istio) | 3 s (5-min cache) | `catalog` | Both (optional) |
 
-All internal calls carry system-principal headers (`x-user-id: …00a1`, `x-tenant-id`, `Idempotency-Key` where required). The BFF never reads a JWT — it has no authenticated users.
+RP-1, RP-2, I-1 and eligibility carry `x-tenant-id`, `x-user-id: …00a1` and `x-tenant-roles: iam-system`; RP-1/RP-2 add `Idempotency-Key`. PUB-1 carries `x-user-id`. Billing B-I1 gets only `x-tenant-id` and `Idempotency-Key: charge:<tenant_id>` (caller identity is the mesh SPIFFE ID). The BFF never reads a JWT — it has no authenticated users.
 
-Every outbound HTTP call is timed by `bff_signup_dependency_call_duration_seconds{dependency, outcome}` and shadowed on the Tier-1 Proposed `platform_dependency_request_seconds{dependency, operation, outcome}`. Timeouts are configurable via `RP_TIMEOUT_MS`, `I1_TIMEOUT_MS`, `ELIGIBILITY_TIMEOUT_MS`, `TURNSTILE_TIMEOUT_MS` (see `.env-example`).
+Every outbound HTTP call is timed by `bff_signup_dependency_call_duration_seconds{dependency, outcome}` and shadowed on the Tier-1 Proposed `platform_dependency_request_seconds{dependency, operation, outcome}`. Timeouts are configurable via `RP_TIMEOUT_MS`, `I1_TIMEOUT_MS`, `ELIGIBILITY_TIMEOUT_MS`, `TURNSTILE_TIMEOUT_MS`, `BILLING_TIMEOUT_MS` (see `.env-example`).
 
 ---
 
 ## API documentation (Swagger UI)
 
-The service ships with an OpenAPI 3.0 spec generated by [`swaggo/swag`](https://github.com/swaggo/swag).
+The service ships with a Swagger 2.0 spec generated by [`swaggo/swag`](https://github.com/swaggo/swag).
 
 ### Accessing the UI
 
 | Environment | URL | Notes |
 |---|---|---|
-| **Local dev** | `http://localhost:8080/swagger/index.html` | Served when `APP_ENV=dev` or `test` |
+| **Local dev** | `http://localhost:8080/swagger/index.html` | Served when `APP_ENV` is `dev`, `test` or `local` |
 | **Staging** | Not exposed (public-facing host) | `DocsEnabled=false` in `values-staging.yaml` |
 | **Production** | Not exposed | `DocsEnabled=false` in `values-prod.yaml` |
 
@@ -234,7 +258,7 @@ The Swagger UI uses a BCBP-branded dark theme (`swagger_theme.go`) and a custom 
 make swag         # regenerates docs/swagger/ from @annotations in handlers.go + swagger_info.go
 ```
 
-The generated files (`docs/swagger/docs.go`, `swagger.json`, `swagger.yaml`) are committed to the repository. The CI step `check-swagger-stale.sh` fails a PR whose annotations diverge from the committed spec — always run `make swag` before pushing annotation changes.
+The generated files (`docs/swagger/docs.go`, `swagger.json`, `swagger.yaml`) are committed to the repository. Run `make swag-check` before pushing: it regenerates the spec and fails if `docs/swagger/` differs. CI's `check-swagger-stale.sh` only checks that the files exist and that the JSON parses.
 
 ### Security definitions in the spec
 
@@ -271,9 +295,11 @@ make run            # start server on :8080
 | `SESSION_TTL_SECONDS` | `1800` | Sliding session TTL |
 | `PBKDF2_ITERATIONS` | `210000` | Minimum enforced; lower values rejected at startup |
 
-All timeout and rate-limit variables (`RP_TIMEOUT_MS`, `I1_TIMEOUT_MS`, `ELIGIBILITY_TIMEOUT_MS`, `REQUEST_DEADLINE_MS`, `RATE_*`) are optional with production-safe defaults. See `.env-example` for the full list.
+All timeout and rate-limit variables (`RP_TIMEOUT_MS`, `RP2_TIMEOUT_MS`, `I1_TIMEOUT_MS`, `ELIGIBILITY_TIMEOUT_MS`, `REQUEST_DEADLINE_MS` (default 5000; must cover eligibility + RP-1 + 2×I-1), `RATE_*`) are optional with production-safe defaults. See `.env-example` for the full list.
 
-The service **panics at startup** if any required env var is missing or invalid (e.g., `PBKDF2_ITERATIONS < 210000`, `SBFF_HMAC_KEY < 32 bytes`). `CAPTCHA_SKIP=true` is rejected by `config.Validate()` when `APP_ENV` is not `dev`, `test`, or `local`.
+Paid signup (SB-5) settings: `PAID_SIGNUP_ENABLED` (default `false`), `BILLING_BASE_URL` (required when enabled), `BILLING_TIMEOUT_MS` (default 15000; startup rejects < 15000 when enabled), `PAID_REQUEST_DEADLINE_MS` (default 30000; must be ≥ `BILLING_TIMEOUT_MS + RP2_TIMEOUT_MS + 2×I1_TIMEOUT_MS`).
+
+The service **panics at startup** if a required env var is missing, and **exits 1** if one is invalid (e.g., `PBKDF2_ITERATIONS < 210000`, `SBFF_HMAC_KEY < 32 bytes`). `CAPTCHA_SKIP=true` is rejected by `config.Validate()` when `APP_ENV` is not `dev`, `test`, or `local`.
 
 ---
 
@@ -284,10 +310,11 @@ The service **panics at startup** if any required env var is missing or invalid 
 | Unit (no external deps) | `make test-unit` | No |
 | Integration (real Valkey) | `make test-integration` | Yes |
 | Contract (RP-1, I-1 shapes) | `make test-unit` (`test/unit/service/contract_test.go`) | No |
+| End-to-end (in-process router + services, Valkey testcontainer, Go mocks of O&M and RP) | `make test-e2e` | Yes |
 | All + race detector + coverage | `make test-ci` | Yes |
-| Load (k6) | `make test-load` | No |
+| Load (k6) | `make test-load` (script `test/load/signup.js` not yet written) | No |
 
-CI enforces **≥ 95% statement coverage** (unit + integration merged). Coverage threshold in `.github/scripts/coverage-gate.sh`.
+CI enforces **≥ 97% statement coverage** on the merged profile (`COVERAGE_THRESHOLD` default in `.github/scripts/coverage-gate.sh`). Last recorded: 98.6%.
 
 ### Additional quality gates
 
@@ -297,7 +324,7 @@ CI enforces **≥ 95% statement coverage** (unit + integration merged). Coverage
 | Metric naming | `make metrics-lint` | Tier classification, `_total`/`_seconds` suffixes, adapter instrumentation, label vocabulary |
 | Observability sink | `make log-sink-lint` | All logs/metrics/traces go through platform-gincommon only |
 | Vuln check | `make vuln-check` | Known CVEs in call paths (govulncheck) |
-| Swagger staleness | CI only | `docs/swagger/` matches `@annotations` in handlers |
+| Swagger staleness | `make swag-check` | `docs/swagger/` matches `@annotations` in handlers (CI only checks the files exist and parse) |
 
 ---
 
@@ -317,12 +344,12 @@ helm upgrade bff-signup ./deploy/helm \
   -f deploy/helm/values-prod.yaml
 ```
 
-**Go-live prerequisites** (see `docs/lld/signup-bff-action-tracker.md`):
-- SRE: mesh trust domain confirmed, SNS filter updated, `signup.bcbpsolutions.com` provisioned
-- TL: sign-off on LLD v0.6 open questions A-1…A-4
-- Web/Growth lead: on-call rotation named
+**Go-live prerequisites** (LLD §16.2):
+- SRE: mesh trust domain confirmed (BFF-1), SNS filter for the O&M backstop (BFF-2), `signup.bcbpsolutions.com` provisioned (BFF-4)
+- On-call rotation (BFF-6) — deferred until PagerDuty is procured
+- Paid signup: Billing go-live order (LLD §19.5) — then set `PAID_SIGNUP_ENABLED=true`
 
-The service code, deployment configuration, and CI pipeline are **production-ready**. The Phase 1 trial signup path is fully implemented, tested (≥ 95% coverage), and hardened. Phase 1.5 (paid signup) remains a stub — `POST /api/v1/signup/paid` returns `404` until `PAID_SIGNUP_ENABLED=true` and a real Billing adapter replaces `buildBilling()` in `wiring.go`.
+**Status:** code complete for Phase 1 and not deployed to any environment. The trial path (SB-1…SB-4) is implemented and tested (≥ 97% coverage gate). Direct paid signup (SB-5) is implemented against Billing B-I1 and returns `404` until `PAID_SIGNUP_ENABLED=true` is set at Billing go-live step 4.
 
 ---
 
@@ -330,9 +357,9 @@ The service code, deployment configuration, and CI pipeline are **production-rea
 
 | Document | Purpose |
 |---|---|
-| [`docs/lld/signup-bff-lld.md`](docs/lld/signup-bff-lld.md) | Full LLD v0.6 — the runtime contract in detail |
-| [`docs/lld/signup-bff-open-questions-tl.md`](docs/lld/signup-bff-open-questions-tl.md) | 4 TL decisions needed before sign-off |
-| [`docs/lld/signup-bff-action-tracker.md`](docs/lld/signup-bff-action-tracker.md) | Team assignments + go-live blockers |
+| [`docs/lld/signup-bff-lld.md`](docs/lld/signup-bff-lld.md) | Full LLD v1.3 — the runtime contract in detail (§16 open items, §19 paid signup) |
+| [`docs/architecture/`](docs/architecture/) | Mermaid diagram sources |
+| [`docs/observability/`](docs/observability/) | Metric registry, runbooks |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Layer model, sequence diagrams, state machine |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, testing, PR process |

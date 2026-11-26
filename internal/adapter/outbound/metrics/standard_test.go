@@ -114,6 +114,8 @@ func exerciseEveryCollector(t *testing.T) {
 	t.Helper()
 	IncFormStarted("trial")
 	IncFormSubmitted("trial")
+	IncFormSubmitted("paid")
+	IncProvisioningSucceeded("paid", "inline")
 	IncProvisioningSucceeded("trial", "inline")
 	IncProvisioningSucceeded("trial", "resume")
 	IncProvisioningSucceeded("trial", "slug_change")
@@ -130,7 +132,7 @@ func exerciseEveryCollector(t *testing.T) {
 	IncHandoffResumed("resubmit")
 	IncHandoffResumed("slug_change")
 
-	// All four adapters must call ObserveDependencyCall — exercise every
+	// All five adapters must call ObserveDependencyCall — exercise every
 	// (dependency, operation, outcome) combination used in production.
 	ObserveDependencyCall("realm_provisioner", "provision_trial", 500*time.Millisecond, &http.Response{StatusCode: 201}, nil)
 	ObserveDependencyCall("realm_provisioner", "provision_direct", 400*time.Millisecond, &http.Response{StatusCode: 201}, nil)
@@ -139,6 +141,8 @@ func exerciseEveryCollector(t *testing.T) {
 	ObserveDependencyCall("org_membership", "slug_resolve", 80*time.Millisecond, &http.Response{StatusCode: 200}, nil)
 	ObserveDependencyCall("turnstile", "siteverify", 150*time.Millisecond, &http.Response{StatusCode: 200}, nil)
 	ObserveDependencyCall("catalog", "plans", 50*time.Millisecond, &http.Response{StatusCode: 200}, nil)
+	ObserveDependencyCall("billing", "authorize_and_charge", 6*time.Second, &http.Response{StatusCode: 201}, nil)
+	ObserveDependencyCall("billing", "authorize_and_charge", 15*time.Second, nil, assert.AnError)
 	// Error outcomes
 	ObserveDependencyCall("org_membership", "provision_tenant", 300*time.Millisecond, &http.Response{StatusCode: 503}, nil)
 	ObserveDependencyCall("turnstile", "siteverify", 300*time.Millisecond, nil, assert.AnError)
@@ -147,4 +151,47 @@ func exerciseEveryCollector(t *testing.T) {
 
 	// DependencyErrorReason (used by call sites to classify errors)
 	assert.Equal(t, "transport", DependencyErrorReason(assert.AnError))
+}
+
+// TestStandard_RegistryOperationsMatchAdapters keeps the local registry entry
+// (registry.go) in step with what the adapters record: every operation label
+// value an adapter uses must be listed for governance review.
+func TestStandard_RegistryOperationsMatchAdapters(t *testing.T) {
+	var entry RegistryEntry
+	for _, e := range PlatformRegistry {
+		if e.Name == "platform_dependency_request_seconds" {
+			entry = e
+		}
+	}
+	require.NotEmpty(t, entry.Name)
+	for _, op := range []string{
+		"provision_trial", "provision_direct", "provision_tenant", "trial_eligibility",
+		"slug_resolve", "siteverify", "plans", "authorize_and_charge",
+	} {
+		assert.Contains(t, entry.LabelValues["operation"], op)
+	}
+	for _, dep := range []string{"realm_provisioner", "org_membership", "turnstile", "catalog", "billing"} {
+		assert.Contains(t, entry.LabelValues["dependency"], dep)
+	}
+}
+
+// Billing B-I1 latency (p95 6 s, timeout 15 s) must land in a finite bucket.
+func TestStandard_DependencyBucketsCoverBillingTimeout(t *testing.T) {
+	ensureRegistered(t)
+	ObserveDependencyCall("billing", "authorize_and_charge", 14*time.Second, &http.Response{StatusCode: 201}, nil)
+
+	gathered, err := gincommon.MetricsGatherer().Gather()
+	require.NoError(t, err)
+	for _, mf := range gathered {
+		if mf.GetName() != "bff_signup_dependency_call_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			b := m.GetHistogram().GetBucket()
+			require.NotEmpty(t, b)
+			assert.GreaterOrEqual(t, b[len(b)-1].GetUpperBound(), 15.0, "top finite bucket must cover BILLING_TIMEOUT_MS")
+		}
+		return
+	}
+	t.Fatal("bff_signup_dependency_call_duration_seconds not exported")
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/tracing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -24,17 +25,29 @@ const (
 
 // Client implements port.RealmProvisioner (RP-1 and RP-2, LLD §5.6, §18.1, §19).
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
+	httpClient       *http.Client // RP-1 (trial): timeout RP_TIMEOUT_MS
+	directHTTPClient *http.Client // RP-2 (paid): timeout RP2_TIMEOUT_MS
+	baseURL          string
 }
 
 var _ port.RealmProvisioner = (*Client)(nil)
 
+// New returns an RP client. timeout bounds RP-1; RP-2 uses the same value
+// unless WithDirectTimeout sets its own (RP-2 is much slower: realm clone).
 func New(baseURL string, timeout time.Duration) *Client {
 	return &Client{
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: timeout},
+		baseURL:          baseURL,
+		httpClient:       &http.Client{Timeout: timeout, Transport: tracing.Transport("realm_provisioner", true)},
+		directHTTPClient: &http.Client{Timeout: timeout, Transport: tracing.Transport("realm_provisioner", true)},
 	}
+}
+
+// WithDirectTimeout sets the RP-2 (provision-direct) timeout (RP2_TIMEOUT_MS).
+func (c *Client) WithDirectTimeout(timeout time.Duration) *Client {
+	if timeout > 0 {
+		c.directHTTPClient = &http.Client{Timeout: timeout, Transport: tracing.Transport("realm_provisioner", true)}
+	}
+	return c
 }
 
 // rp1Error is the RFC 9457 error shape RP returns (LLD §17.2).
@@ -108,9 +121,9 @@ func (c *Client) ProvisionTrial(ctx context.Context, req port.ProvisionTrialRequ
 	}
 }
 
-// ProvisionDirect calls RP-2 for direct paid signup (Phase 1.5, LLD §19).
-// The error mapping mirrors ProvisionTrial; confirm exact RP-2 response codes
-// against RP LLD §5.3 when building Phase 1.5.
+// ProvisionDirect calls RP-2 for direct paid signup (LLD §19). The error mapping
+// mirrors ProvisionTrial except OPERATION_IN_PROGRESS → ErrInvalidState; RP-2
+// response codes are to be re-confirmed against RP LLD §5.3 (LLD §19.6).
 func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRequest, idempotencyKey string) (*port.ProvisionDirectResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -129,7 +142,7 @@ func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRe
 	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 
 	start := time.Now()
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.directHTTPClient.Do(httpReq)
 	metrics.ObserveDependencyCall("realm_provisioner", "provision_direct", time.Since(start), resp, err)
 	if err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "realm provisioner temporarily unavailable")
@@ -151,9 +164,12 @@ func (c *Client) ProvisionDirect(ctx context.Context, req port.ProvisionDirectRe
 		case "EMAIL_ALREADY_REGISTERED":
 			return nil, domain.NewError(domain.ErrEmailUnavailable, "email already registered in Keycloak")
 		case "OPERATION_IN_PROGRESS":
-			return nil, domain.NewError(domain.ErrInvalidState, "RP-2 operation in progress, retry")
+			// RP is still running this key; the caller retries with the same key.
+			return nil, domain.NewError(domain.ErrOperationInProgress, "RP-2 operation in progress, retry")
 		case "REALM_ALREADY_DEDICATED":
-			return nil, domain.NewError(domain.ErrInvalidState, "tenant realm is already dedicated")
+			// Realm tenant-<slug> already exists in Keycloak: a slug collision
+			// PUB-1 (fail-open) did not catch, or a leftover realm.
+			return nil, domain.NewError(domain.ErrSlugTaken, "a realm for this workspace address already exists")
 		case "TENANT_OFFBOARDED":
 			return nil, domain.NewError(domain.ErrInvalidState, "tenant has been offboarded — signup not allowed")
 		}

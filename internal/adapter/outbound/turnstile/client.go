@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/tracing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -32,7 +34,7 @@ func New(secret, expectedHostname string, timeout time.Duration) *Client {
 	return &Client{
 		secret:           secret,
 		expectedHostname: expectedHostname,
-		httpClient:       &http.Client{Timeout: timeout},
+		httpClient:       &http.Client{Timeout: timeout, Transport: tracing.Transport("turnstile", false)},
 	}
 }
 
@@ -61,7 +63,9 @@ func (c *Client) Verify(ctx context.Context, token, remoteIP string) error {
 	metrics.ObserveDependencyCall("turnstile", "siteverify", time.Since(start), resp, err)
 	if err != nil {
 		metrics.IncCaptchaChallenged("error") // LLD §11.2
-		return domain.NewError(domain.ErrDependencyUnavailable, fmt.Sprintf("Turnstile unreachable: %v", err))
+		// Fixed text: the transport error (internal URL, dial details) would end up
+		// in the public 503 detail.
+		return domain.NewError(domain.ErrDependencyUnavailable, "CAPTCHA provider unreachable")
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -76,6 +80,11 @@ func (c *Client) Verify(ctx context.Context, token, remoteIP string) error {
 		return domain.NewError(domain.ErrDependencyUnavailable, "failed to decode Turnstile response")
 	}
 
+	if !result.Success && slices.Contains(result.ErrorCodes, "internal-error") {
+		// Cloudflare-side fault, not the user's token: an outage, not a CAPTCHA failure.
+		metrics.IncCaptchaChallenged("error")
+		return domain.NewError(domain.ErrDependencyUnavailable, "CAPTCHA provider error")
+	}
 	if !result.Success {
 		metrics.IncCaptchaChallenged("fail") // LLD §11.2
 		return domain.NewError(domain.ErrCaptchaFailed, "CAPTCHA verification failed")

@@ -9,10 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/adapter/outbound/tracing"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup/internal/core/port"
 )
@@ -43,9 +41,9 @@ type SignupResult struct {
 	SlugSuggestions       []string // set when State == slug_conflict
 }
 
-// maxSignupsPerIPPerHour and maxAttemptsPerEmailPerDay are the default limits.
-// SignupService uses configurable fields; PaidSignupService (Phase 1.5, on hold) references
-// these package-level constants until billing is wired.
+// maxSignupsPerIPPerHour and maxAttemptsPerEmailPerDay are the defaults for the
+// RATE_* limits. Both services take the configured values: SignupService through
+// its constructor, PaidSignupService through WithRateLimits.
 const (
 	maxSignupsPerIPPerHour    = 3
 	maxAttemptsPerEmailPerDay = 5
@@ -101,8 +99,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 
 	// Business attributes on the request span (LLD §11.3, O-03). IDs and state only:
 	// never email, name or password.
-	span := trace.SpanFromContext(ctx)
-	span.SetAttributes(attribute.String("signup.id", in.Session.SignupID))
+	tracing.Annotate(ctx, "signup.id", in.Session.SignupID)
 
 	// ── 0. Same-email resume (G-1, LLD §5.4) ─────────────────────────────────
 	// A repeat SB-2 on a session whose identity already exists only resumes: it
@@ -111,14 +108,12 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 	// validated session cookie, so this cheap read is not attacker-chosen.
 	// A read error is ignored here; step 4 reads again and returns 503.
 	emailHMAC := s.emailHMAC(in.AdminEmail)
-	if prior, getErr := s.handoffs.Get(ctx, in.Session.SignupID); getErr == nil && prior != nil {
+	if prior, getErr := s.handoffs.Get(ctx, in.Session.SignupID); getErr == nil && prior != nil &&
+		!prior.BlocksOtherSignupType(domain.SignupTypeTrial) {
 		switch prior.State { //nolint:exhaustive
 		case domain.StateIdentityCreated, domain.StateTenantPending, domain.StateSlugConflict:
 			if hmacEqual(prior.AdminEmailHMAC, emailHMAC) {
-				span.SetAttributes(
-					attribute.String("tenant.id", prior.TenantID),
-					attribute.String("handoff.state", string(prior.State)),
-				)
+				tracing.Annotate(ctx, "tenant.id", prior.TenantID, "handoff.state", string(prior.State))
 				return &SignupResult{SignupID: prior.SignupID, TenantID: prior.TenantID, State: prior.State}, nil
 			}
 		}
@@ -188,11 +183,12 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 
 	// ── 6. Allocate handoff ───────────────────────────────────────────────────
 	tenantID := s.idgen.NewUUIDv7()
-	span.SetAttributes(attribute.String("tenant.id", tenantID))
+	tracing.Annotate(ctx, "tenant.id", tenantID)
 	signupID := in.Session.SignupID
 	now := s.clock.Now()
 
 	h := &domain.Handoff{
+		Type:           domain.SignupTypeTrial,
 		SignupID:       signupID,
 		TenantID:       tenantID,
 		State:          domain.StateAllocated,
@@ -220,6 +216,14 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		_ = s.handoffs.ReleaseLock(ctx, signupID, lockToken)
 	}()
 
+	// Re-read under the lock: an SB-5 on the same session may have written a
+	// paid handoff since step 4, and it must never be overwritten.
+	if current, getErr := s.handoffs.Get(ctx, signupID); getErr != nil {
+		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
+	} else if current.BlocksOtherSignupType(domain.SignupTypeTrial) {
+		return nil, otherSignupInProgress(current)
+	}
+
 	if err := s.handoffs.Create(ctx, h); err != nil {
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
 	}
@@ -241,7 +245,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		// Slug conflict: return the result (with suggestions) alongside the error
 		// so the handler can include suggestions in the 409 response.
 		if orcResult != nil && isDomainCause(err, domain.ErrSlugTaken) {
-			span.SetAttributes(attribute.String("handoff.state", string(orcResult.State)))
+			tracing.Annotate(ctx, "handoff.state", string(orcResult.State))
 			return &SignupResult{
 				SignupID:        signupID,
 				TenantID:        tenantID,
@@ -252,7 +256,7 @@ func (s *SignupService) Submit(ctx context.Context, in SignupInput) (*SignupResu
 		return nil, err
 	}
 
-	span.SetAttributes(attribute.String("handoff.state", string(orcResult.State)))
+	tracing.Annotate(ctx, "handoff.state", string(orcResult.State))
 	return &SignupResult{
 		SignupID:              signupID,
 		TenantID:              tenantID,
@@ -270,6 +274,11 @@ func (s *SignupService) handleResubmit(
 	in SignupInput,
 	slug, emailHMAC string,
 ) (*SignupResult, bool, error) {
+	// A paid attempt on this session is never touched by SB-2: overwriting it
+	// would lose its charge key, or orphan a paid subscription (SB-INV-3).
+	if existing.BlocksOtherSignupType(domain.SignupTypeTrial) {
+		return nil, true, otherSignupInProgress(existing)
+	}
 	switch existing.State { //nolint:exhaustive
 	case domain.StateRejected, "":
 		return nil, false, nil // treat as new attempt

@@ -87,7 +87,7 @@ func (s *SessionService) Create(ctx context.Context, clientIP string) (*SessionR
 		return nil, domain.NewError(domain.ErrDependencyUnavailable, "session store unavailable")
 	}
 
-	metrics.IncFormStarted("trial") // LLD §11.2 — mode="trial" in Phase 1; "paid" in Phase 1.5
+	metrics.IncFormStarted("trial") // LLD §11.2 — SB-1 does not know the path yet, so sessions count as "trial"
 	return &SessionResult{
 		SID:       sid,
 		SignupID:  signupID,

@@ -32,9 +32,9 @@ type ProvisionTrialResponse struct {
 	EmailVerificationSent bool   `json:"email_verification_sent"`
 }
 
-// ProvisionDirectRequest is the RP-2 request body for direct paid signup (Phase 1.5, LLD §19).
+// ProvisionDirectRequest is the RP-2 request body for direct paid signup (LLD §19).
 // Fields mirror RP-1 but add BillingSubscriptionID and target a dedicated realm from day one.
-// Confirm exact field set against RP LLD §5.3 when building Phase 1.5.
+// Field set to be re-confirmed against RP LLD §5.3 before paid go-live (LLD §19.6).
 type ProvisionDirectRequest struct {
 	TenantID              string          `json:"tenant_id"`
 	TenantName            string          `json:"tenant_name"`
@@ -47,11 +47,10 @@ type ProvisionDirectRequest struct {
 	TermsAcceptance       TermsAcceptance `json:"terms_acceptance"`
 }
 
-// ProvisionDirectResponse is the RP-2 201 response body (Phase 1.5, LLD §19).
-// RP-2 provisions a dedicated Keycloak realm; it does NOT return keycloak_user_id
-// in its current response shape (ProvisionDirectResult in RP provisioning_service.go).
-// Before Phase 1.5 activates, RP-2 must be updated to include keycloak_user_id so the
-// BFF can forward it to I-1 as owner_user_id (SB-INV-4).
+// ProvisionDirectResponse is the RP-2 201 response body (LLD §19). RP-2
+// provisions a dedicated Keycloak realm and returns keycloak_user_id (RP
+// ProvisionDirectResult), which the BFF forwards to I-1 as owner_user_id (SB-INV-4).
+// RP-2 also returns email_verification_sent.
 type ProvisionDirectResponse struct {
 	TenantID      string   `json:"tenant_id"`
 	Realm         string   `json:"realm"`
@@ -61,6 +60,9 @@ type ProvisionDirectResponse struct {
 	// KeycloakUserID is the admin user created in the dedicated realm.
 	// Required by I-1 as owner_user_id (SB-INV-4). Returned by RP-2.
 	KeycloakUserID string `json:"keycloak_user_id"`
+	// EmailVerificationSent reports whether RP-2 triggered the verification
+	// email. Nil when RP omits it (treated as sent: dedicated realms always send).
+	EmailVerificationSent *bool `json:"email_verification_sent,omitempty"`
 }
 
 // RealmProvisioner is the port for RP-1 and RP-2 (LLD §5.6, §18.1, §19).
@@ -69,7 +71,7 @@ type RealmProvisioner interface {
 	// (format: "signup:<tenantID>:rp1"). Returns a DomainError on failure.
 	ProvisionTrial(ctx context.Context, req ProvisionTrialRequest, idempotencyKey string) (*ProvisionTrialResponse, error)
 
-	// ProvisionDirect calls RP-2 for direct paid signup (Phase 1.5, LLD §19).
+	// ProvisionDirect calls RP-2 for direct paid signup (LLD §19).
 	// idempotencyKey format: "signup:<tenantID>:rp2".
 	// The real adapter is wired when PAID_SIGNUP_ENABLED=true.
 	ProvisionDirect(ctx context.Context, req ProvisionDirectRequest, idempotencyKey string) (*ProvisionDirectResponse, error)

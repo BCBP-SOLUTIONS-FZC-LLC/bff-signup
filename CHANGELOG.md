@@ -8,6 +8,76 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — SB-5 aligned to Billing B-I1 (BL-OQ-8, 2026-11-26)
+
+Billing published the final B-I1 contract (Billing LLD rev 0.51 §5.4.2). LLD §19 rewritten.
+
+- Billing adapter: body fields are now `plan_code`, `licensed_seats`, `payment_method_ref`; `x-user-id` / `x-tenant-roles` dropped (caller identity is the mesh SPIFFE ID). Handles `402 PAYMENT_ACTION_REQUIRED` (3-D Secure), `402 PAYMENT_DECLINED` with `decline_reason`, `410 CHARGE_EXPIRED`, `409 REQUEST_IN_PROGRESS` and `Retry-After`, `422 PRICE_NOT_AVAILABLE`, `403`, and `500`.
+- **Fixed:** a retry after a Billing timeout or `5xx` used to allocate a new `tenant_id`, so a new `charge:<tenant_id>` key, and could start a second charge. SB-5 now resumes the session's paid handoff and repeats the same key and body. The handoff is kept on unknown outcomes and after payment (including RP-2 `email_unavailable`, which used to orphan a paid subscription).
+- New handoff state `payment_action_required`; SB-5 returns `202 {status: payment_action_required, action, expires_at}` and the browser re-POSTs after 3-D Secure.
+- New errors: `PAYMENT_DECLINED` → `422`, `CHARGE_EXPIRED` → `410`. `503` now carries `Retry-After` when the dependency gives one.
+- Config: `BILLING_TIMEOUT_MS` default 15000, enforced ≥ 15000 when paid signup is on; new `PAID_REQUEST_DEADLINE_MS` (default 30000) for SB-5 only, and the server `WriteTimeout` follows it. Helm `BILLING_BASE_URL` set to the Billing cluster URL; `PAID_SIGNUP_ENABLED` stays `false`.
+
+### Fixed — production-readiness review (2026-11-27)
+
+Paid signup (could charge twice, or leave a customer paid without an account):
+- Trial (SB-2) and paid (SB-5) submits on one session no longer overwrite each other's handoff (`409 INVALID_STATE`, `reason: other_signup_in_progress`); trial handoffs now record `type: trial`.
+- I-1 no longer sends `email_hash` on the paid path: O&M claimed the one-trial ledger and answered `409 TRIAL_ALREADY_USED` to anyone who once had a trial, after they had paid. I-1 `TRIAL_ALREADY_USED` / `TENANT_OFFBOARDED` are now mapped.
+- Billing errors delete the handoff only on `PAYMENT_DECLINED`, `CHARGE_EXPIRED` or `PRICE_NOT_AVAILABLE`; unexpected replies keep it, so a retry reuses `charge:<tenant_id>`.
+- RP-2: own timeout `RP2_TIMEOUT_MS` (8000; RP-2 p95 is 4 s, the old 900 ms nearly always timed out); `rp2_attempted` freezes slug/name/email so the RP-2 key is never reused with another body; `REALM_ALREADY_DEDICATED` → slug conflict with suggestions; `OPERATION_IN_PROGRESS` → retryable 503; `email_verification_sent` is read.
+- The handoff lock lives for the longest request deadline + 5 s (was 15 s, shorter than a paid request).
+- Seats limited to 1–1000 (Billing's limit); a resume that cannot match is refused before PBKDF2; SB-3 returns `action: complete_payment` / `resubmit` for payment states.
+
+Trial and platform:
+- `RP_TIMEOUT_MS` 900 → 2000 (RP-1 p95 is 1.5 s) and `REQUEST_DEADLINE_MS` 2500 → 5000; `Validate()` checks both deadlines cover their call chains. This also removed the e2e flakiness (requests exceeded 2.5 s under load).
+- Client IP from `x-envoy-external-address` must parse as an IP; the terms User-Agent is sanitised (never empty, no control characters); Turnstile transport errors are no longer in the 503 detail and Cloudflare `internal-error` is a 503; CR-4 400/401/403 are contract errors, not retried 503s; HSTS header.
+- Catalog adapter uses CAT-I2 (`GET /api/v1/internal/plans`, `iam-system` headers, `display_name` / `trial_duration_days`).
+
+Chart:
+- Added the Turnstile `ServiceEntry` template — prod enabled it but no template existed, so every CAPTCHA call would fail under `REGISTRY_ONLY`.
+- Istio AuthorizationPolicy enabled in staging and prod.
+- HTTPRoute: request timeouts (35 s for `/paid`, 10 s otherwise; Envoy's default 15 s cut off SB-5), hostname from `env.PUBLIC_HOST` (`.Values.publicHost` did not exist and rendered `null`), `/healthz` and `/readyz` no longer routed publicly.
+- NetworkPolicy egress names its destinations (kube-system DNS, Valkey CIDRs, `iam`/`billing` namespaces, OTel, istiod 15012 — the sidecar could not reach istiod before — and public-only 443).
+- No service-account token mounted; optional `image.digest`.
+- `helm-check.sh` validates CRDs against the CRD schema catalog (it failed on PrometheusRule/ServiceMonitor before) and renders prod with the HTTPRoute.
+
+### Changed — logs, metrics and traces go through platform-gincommon only (2026-11-27)
+
+- **Fixed: no distributed tracing past the BFF.** The five outbound HTTP clients were bare `http.Client`s: no client span and no `traceparent`, although LLD §11.3 said traces reached RP, O&M and Keycloak. Valkey had no spans either. New `internal/adapter/outbound/tracing` (built on `gincommon.NewTracer` / `RecordSpanError` / `InjectTraceContext`): `tracing.Transport(dependency, propagate)` on every client (Turnstile without propagation), a go-redis hook for Valkey commands and pipelines (no keys recorded), and `tracing.Annotate` for request-span attributes. SB-5 now annotates its span like SB-2.
+- Services no longer import OpenTelemetry; the metrics package no longer imports Prometheus (gincommon's `CounterVec` / `HistogramVec` aliases; the unused `mustShared` reuse path is gone). `prometheus/client_golang` is now an indirect dependency.
+- `check-log-sink.sh` gains METRICS-2 (no `github.com/prometheus/*` import), TRACES-2 (OpenTelemetry only in the tracing package), TRACES-3 (every `http.Client` uses `tracing.Transport`; no `http.DefaultClient`/`http.Get`), TRACES-4 (every Valkey client has the tracing hook) and LOG-4 (no `gin.Default/Logger/Recovery`). `.go-arch-lint.yml` adds the tracing package to the `observability` component.
+
+### Changed — Enterprise Platform Observability Standard: monitoring fixed, CI enforcement completed (2026-11-27)
+
+- **Fixed: the deployed alerts never fired.** The Helm `PrometheusRule` still queried `signup_bff_*` names the service stopped emitting, and `SignupRealmProvisionerUnavailable` filtered on `stage="realm_provisioner"`, which is never recorded. The Helm rule is now generated from `deploy/monitoring/app-alerts.yml` + `slo-rules.yml` (it also deploys the SLO rules now), and the RP alert uses the RP dependency error ratio.
+- **SLO-1** measures 5xx on `POST /trial` and `/paid` from `platform_http_requests_total` (platform-gincommon) instead of dependency errors as a proxy; its burn-rate alerts carry `metric_status: proposed`, as in iam-org-membership. New `SignupProvisioningSLOBreach` (SLO-2) and `SignupBillingUnavailable` alerts. Every alert links to a runbook heading.
+- Prometheus Adapter rule repointed from the non-existent `signup_bff_request_duration_seconds_count` to `platform_http_requests_total` (HPA stays CPU-only, G-9).
+- Dashboard `signup-health.json` had no panels; it now has 11 (funnel, SLOs, failures, dependency latency/errors incl. Billing, CAPTCHA, rate limits, resumes, PBKDF2, submit latency).
+- `bff_signup_dependency_call_duration_seconds` buckets now match the registry's `dependency_request` preset (to 30 s); Billing B-I1 (p95 6 s) previously landed in `+Inf`. Help texts cover SB-5; `registry.go` lists `authorize_and_charge`.
+- CI (`make metrics-lint`, `validate-quality.yml`): platform-gincommon's `metricslint check` on a real scrape and `metricslint refs`; new checks that every queried metric is emitted, that the Helm and flat rules match, that Proposed-metric alerts are labelled, and that alerts link to runbooks; `docs/observability/metric-registry.md` is generated (`make metrics-inventory`) and drift-checked. `metrics-registry-lint.sh` now also covers the Helm and adapter rules.
+
+### Changed — RFC 9457 adoption finished, aligned with the IAM services (2026-11-27)
+
+- Removed the Swagger-only `ErrorResponse` and `SlugTakenResponse` DTOs. Every `@Failure` annotation references `ProblemResponse = problem.Problem`, platform-gincommon's own type (as iam-org-membership does); `docs/swagger/` regenerated. `/readyz`'s 503 is documented as the status map it returns.
+- `HandleError` leaves request-context endings to gincommon, as iam-org-membership does: an expired gincommon `RequestTimeout` is answered by gincommon's `503 REQUEST_TIMEOUT` problem and counted on `platform_http_request_timeouts_total` (before, the BFF wrote its own 503); a client disconnect is recorded as `499`.
+- No change to any status code or `errorCode` a client sees for business errors. `errors.go` remains the single domain → gincommon mapping, like the IAM services' `domainErrorToProblem`.
+
+### Changed — dependencies updated to latest (2026-11-27)
+
+- Direct: `platform-gincommon/v2` v2.2.0 → v2.7.0 (all additive: new `domain` values and metric-registry entries, go1.26.11 / `x/crypto` v0.59.0 security toolchain already in use here), `redis/go-redis/v9` v9.23.0 → v9.24.0; test-only `alicebob/miniredis/v2` v2.40.0 → v2.41.0, `testcontainers-go` v0.44.0 → v0.45.0.
+- Indirect modules upgraded with them (`go get -u -t ./...`, also with the `integration` and `e2e` tags). Every module compiled into the service or its tests is now at its latest version; `govulncheck` reports no vulnerabilities.
+
+### Fixed — paid and trial signup issues found in the docs audit (2026-11-27)
+
+- **SB-5 was cut off at 2.5 s.** gincommon's outer `RequestTimeout` was `REQUEST_DEADLINE_MS`, so `PAID_REQUEST_DEADLINE_MS` had no effect. The outer timeout is now `cfg.MaxRequestDeadline()` (30 s with paid on); every other handler still sets its own `REQUEST_DEADLINE_MS` deadline.
+- **SB-5 could charge twice** when a session past payment (`identity_created`, `tenant_pending`, `slug_conflict`, `completed`, `failed`) resubmitted with another email: a new `tenant_id` was allocated. It now returns `409 INVALID_STATE` (`reason: details_changed`), or the current state for the same email.
+- **PUB-1 slug conflict was a dead end** on both paths: the handoff went to `slug_conflict` with no Keycloak user, SB-4 refused it and a resubmit returned the old conflict. The handoff now stays `allocated` (SB-2) or `payment_confirmed` (SB-5), so a resubmit with a new slug works, and on SB-5 reuses the paid subscription.
+- SB-5 reads the `RATE_*` limits (`WithRateLimits`) instead of hard-coded 3/5, emits `form_submitted`/`rate_limited` and `mode="paid"` provisioning metrics, and re-issues the session cookie so a 3-D Secure re-POST keeps its session.
+
+### Changed — docs aligned with the code (2026-11-27)
+
+- LLD v1.2, README, ARCHITECTURE, `docs/architecture/` diagrams, `docs/observability/metric-registry.md` and `.claude/*.md` now describe SB-5 as implemented (not a "Phase 1.5 stub"), the RFC 9457 error shape with UPPER_SNAKE `errorCode`s, the 10-state handoff machine (one diagram in LLD §9.1, ARCHITECTURE and the `.mmd` source), outbound headers per call, the go-arch-lint rules as configured, the 97% coverage gate, Go 1.26.11, and the test layout. References to the non-existent open-questions and action-tracker files were removed.
+
 ### Added — Billing HTTP adapter for Phase 1 paid signup (SGN-2, 2026-11-14)
 
 Commercial Domain HLD v0.43 retired Phase 1.5; paid signup is now required for Phase 1.
@@ -257,4 +327,4 @@ All changes on branch `bff-signup-initial`. Zero new features — every change i
 
 ## [0.1.0] — not yet released
 
-Initial pre-release. No environment has been deployed. Pending TL sign-off on LLD v0.6 and SRE provisioning of `signup.bcbpsolutions.com`.
+Initial pre-release. No environment has been deployed and no tag exists (VERSIONING.md). Open before production: SRE infra BFF-1/2/4 (LLD §16.2).

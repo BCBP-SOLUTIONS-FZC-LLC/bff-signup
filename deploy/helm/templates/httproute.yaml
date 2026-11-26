@@ -23,28 +23,28 @@ spec:
       sectionName: {{ . }}
       {{- end }}
   hostnames:
-    - {{ .Values.publicHost | quote }}
+    - {{ required "env.PUBLIC_HOST is required for the HTTPRoute" .Values.env.PUBLIC_HOST | quote }}
   rules:
-    # All signup API routes under /api/v1/signup
+    # SB-5 paid signup waits on Billing B-I1 and RP-2: its own, longer timeout.
+    - matches:
+        - path:
+            type: Exact
+            value: "/api/v1/signup/paid"
+          method: POST
+      timeouts:
+        request: {{ .Values.ingress.timeouts.paid | quote }}
+      backendRefs:
+        - name: {{ include "bff-signup.fullname" . }}
+          port: {{ .Values.service.port }}
+    # All other signup API routes under /api/v1/signup.
+    # /healthz and /readyz are deliberately not routed: they are for the
+    # kubelet only, and every public /readyz call would ping Valkey.
     - matches:
         - path:
             type: PathPrefix
             value: "/api/v1/signup"
-      backendRefs:
-        - name: {{ include "bff-signup.fullname" . }}
-          port: {{ .Values.service.port }}
-    # Health probes — reachable from infra without authentication
-    - matches:
-        - path:
-            type: Exact
-            value: "/healthz"
-      backendRefs:
-        - name: {{ include "bff-signup.fullname" . }}
-          port: {{ .Values.service.port }}
-    - matches:
-        - path:
-            type: Exact
-            value: "/readyz"
+      timeouts:
+        request: {{ .Values.ingress.timeouts.default | quote }}
       backendRefs:
         - name: {{ include "bff-signup.fullname" . }}
           port: {{ .Values.service.port }}

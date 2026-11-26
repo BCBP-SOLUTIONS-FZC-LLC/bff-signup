@@ -18,8 +18,26 @@
 #              All metrics must be built via gincommon.NewCounterVec /
 #              NewHistogramVec / NewSharedHistogramVec (rule 8).
 #
+#   METRICS-2  No import of github.com/prometheus/* in non-test code. Collector
+#              types come from gincommon's aliases (gincommon.CounterVec,
+#              HistogramVec, Registerer); /metrics is gincommon.MetricsHandler.
+#
 #   TRACES-1  No raw otel.SetTracerProvider or trace.NewSpanContext outside
 #             cmd/server/main.go (which uses gincommon.InitTracingWithConfig).
+#
+#   TRACES-2  No import of go.opentelemetry.io/* outside
+#             internal/adapter/outbound/tracing/, the one package that builds
+#             spans on gincommon.NewTracer / InjectTraceContext.
+#
+#   TRACES-3  Every outbound http.Client sets Transport: tracing.Transport(...)
+#             (client span + traceparent via gincommon); no http.DefaultClient,
+#             http.Get/Post/Head or bare &http.Client{} without it.
+#
+#   TRACES-4  Every Valkey client (redis.NewClient) gets the tracing hook
+#             (AddHook(tracingHook{})) in the same function.
+#
+#   LOG-4  No gin.Default(), gin.Logger() or gin.Recovery(): access logs and
+#          panic recovery come from gincommon.ObservabilityMiddlewares.
 #
 # Mirrors the pattern used by iam-org-membership.
 
@@ -142,11 +160,68 @@ for path in all_go:
             f"and gincommon.ObservabilityMiddlewares (TRACES-1)"
         )
 
+def lineno(text, pos):
+    return text[:pos].count("\n") + 1
+
+def in_tracing_pkg(path):
+    return "internal/adapter/outbound/tracing/" in path
+
+# ── METRICS-2: prometheus imports anywhere ───────────────────────────────────
+for path in all_go:
+    text = open(path, encoding="utf-8").read()
+    for m in re.finditer(r'"github\.com/prometheus/[^"]*"', text):
+        errors.append(
+            f"{path}:{lineno(text, m.start())}: imports {m.group(0)} — use gincommon's "
+            f"metric aliases and constructors (METRICS-2)"
+        )
+
+# ── TRACES-2: OpenTelemetry imports outside the tracing package ──────────────
+for path in all_go:
+    if in_tracing_pkg(path):
+        continue
+    text = open(path, encoding="utf-8").read()
+    for m in re.finditer(r'"go\.opentelemetry\.io/[^"]*"', text):
+        errors.append(
+            f"{path}:{lineno(text, m.start())}: imports {m.group(0)} — spans, attributes and "
+            f"propagation go through internal/adapter/outbound/tracing (gincommon) (TRACES-2)"
+        )
+
+# ── TRACES-3: outbound HTTP clients must use the traced transport ─────────────
+for path in all_go:
+    if in_tracing_pkg(path):
+        continue
+    text = open(path, encoding="utf-8").read()
+    for m in re.finditer(r'\bhttp\.(DefaultClient|Get|Post|PostForm|Head)\b', text):
+        errors.append(f"{path}:{lineno(text, m.start())}: http.{m.group(1)} — use a client with "
+                      f"Transport: tracing.Transport(...) (TRACES-3)")
+    for m in re.finditer(r'&http\.Client\{[^}]*\}', text, re.S):
+        if "tracing.Transport(" not in m.group(0):
+            errors.append(f"{path}:{lineno(text, m.start())}: http.Client without "
+                          f"Transport: tracing.Transport(...) — no span, no traceparent (TRACES-3)")
+
+# ── TRACES-4: Valkey clients must carry the tracing hook ─────────────────────
+for path in all_go:
+    text = open(path, encoding="utf-8").read()
+    for m in re.finditer(r'\bredis\.NewClient\(', text):
+        func_start = text.rfind("\nfunc ", 0, m.start())
+        func_end = text.find("\nfunc ", m.start())
+        body = text[func_start: func_end if func_end != -1 else len(text)]
+        if "AddHook(tracingHook{})" not in body:
+            errors.append(f"{path}:{lineno(text, m.start())}: redis.NewClient without "
+                          f"AddHook(tracingHook{{}}) — Valkey calls would be untraced (TRACES-4)")
+
+# ── LOG-4: gin's own logger / recovery ───────────────────────────────────────
+for path in all_go:
+    text = open(path, encoding="utf-8").read()
+    for m in re.finditer(r'\bgin\.(Default|Logger|LoggerWithConfig|Recovery|CustomRecovery)\(', text):
+        errors.append(f"{path}:{lineno(text, m.start())}: gin.{m.group(1)}() — use gin.New() with "
+                      f"gincommon.ObservabilityMiddlewares (LOG-4)")
+
 if errors:
     for e in errors:
         print(f"::error::{e}")
     print(f"\n{len(errors)} violation(s) — logs/metrics/traces must pass through platform-gincommon only.")
     sys.exit(1)
 
-print("  ✔  All logs, metrics, and traces pass through platform-gincommon (LOG-1/2/3, METRICS-1, TRACES-1)")
+print("  ✔  All logs, metrics, and traces pass through platform-gincommon (LOG-1/2/3/4, METRICS-1/2, TRACES-1/2/3/4)")
 PYEOF

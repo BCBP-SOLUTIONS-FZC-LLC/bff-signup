@@ -46,12 +46,13 @@ func TestConfig_SlugRules(t *testing.T) {
 
 func TestConfig_TimeoutHelpers(t *testing.T) {
 	cfg := &Config{
-		RPTimeoutMs:          2000,
-		I1TimeoutMs:          1500,
-		EligibilityTimeoutMs: 1000,
-		TurnstileTimeoutMs:   3000,
-		RequestDeadlineMs:    2500,
-		BillingTimeoutMs:     5000,
+		RPTimeoutMs:           2000,
+		I1TimeoutMs:           1500,
+		EligibilityTimeoutMs:  1000,
+		TurnstileTimeoutMs:    3000,
+		RequestDeadlineMs:     2500,
+		BillingTimeoutMs:      5000,
+		PaidRequestDeadlineMs: 30000,
 	}
 	assert.Equal(t, 2000*time.Millisecond, cfg.RPTimeout())
 	assert.Equal(t, 1500*time.Millisecond, cfg.I1Timeout())
@@ -59,6 +60,7 @@ func TestConfig_TimeoutHelpers(t *testing.T) {
 	assert.Equal(t, 3000*time.Millisecond, cfg.TurnstileTimeout())
 	assert.Equal(t, 2500*time.Millisecond, cfg.RequestDeadline())
 	assert.Equal(t, 5000*time.Millisecond, cfg.BillingTimeout())
+	assert.Equal(t, 30000*time.Millisecond, cfg.PaidRequestDeadline())
 }
 
 func validConfig() *Config {
@@ -71,6 +73,7 @@ func validConfig() *Config {
 		OrgMembershipURL:    "http://om.example.com",
 		// Timeouts and session TTL must satisfy the bounds enforced by Validate().
 		RPTimeoutMs:          900,
+		RP2TimeoutMs:         8000,
 		I1TimeoutMs:          300,
 		EligibilityTimeoutMs: 150,
 		RequestDeadlineMs:    2500,
@@ -147,8 +150,63 @@ func TestConfig_Validate_PaidEnabledWithBillingURL(t *testing.T) {
 	cfg := validConfig()
 	cfg.PaidSignupEnabled = true
 	cfg.BillingURL = "http://billing.internal"
+	cfg.BillingTimeoutMs = 15000
+	cfg.PaidRequestDeadlineMs = 30000
 	err := cfg.Validate()
 	require.NoError(t, err)
+}
+
+// BL-OQ-8: B-I1 p99 is 12 s, so paid signup needs BILLING_TIMEOUT_MS >= 15000
+// and an SB-5 deadline that covers Billing, RP-2 and I-1.
+func TestConfig_Validate_PaidTimeouts(t *testing.T) {
+	tests := []struct {
+		name            string
+		billingMs, paid int
+		wantErr         string
+	}{
+		{"billing below floor", 14999, 30000, "BILLING_TIMEOUT_MS must be >= 15000"},
+		{"deadline below billing+rp2+2*i1", 15000, 23599, "PAID_REQUEST_DEADLINE_MS must be >= BILLING_TIMEOUT_MS + RP2_TIMEOUT_MS + 2*I1_TIMEOUT_MS (23600)"},
+		{"deadline exactly billing+rp2+2*i1", 15000, 23600, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.PaidSignupEnabled = true
+			cfg.BillingURL = "http://billing.internal"
+			cfg.BillingTimeoutMs = tc.billingMs
+			cfg.PaidRequestDeadlineMs = tc.paid
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+
+	// Disabled: timeouts are not checked (the stub is wired, Billing is never called).
+	cfg := validConfig()
+	cfg.BillingTimeoutMs = 5000
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfig_ServerWriteTimeout(t *testing.T) {
+	cfg := validConfig()
+	cfg.PaidRequestDeadlineMs = 30000
+	assert.Equal(t, 2500*time.Millisecond, cfg.MaxRequestDeadline(), "paid off: REQUEST_DEADLINE_MS")
+	assert.Equal(t, 3000*time.Millisecond, cfg.ServerWriteTimeout(), "paid off: RequestDeadline + 500ms")
+
+	cfg.PaidSignupEnabled = true
+	assert.Equal(t, 30*time.Second, cfg.MaxRequestDeadline(),
+		"paid on: gincommon's outer RequestTimeout must not cut SB-5 off at REQUEST_DEADLINE_MS")
+	cfg.PaidSignupEnabled = false
+
+	cfg.PaidSignupEnabled = true
+	assert.Equal(t, 30500*time.Millisecond, cfg.ServerWriteTimeout(), "paid on: longest deadline + 500ms")
+
+	cfg.PaidRequestDeadlineMs = 1000
+	assert.Equal(t, 3000*time.Millisecond, cfg.ServerWriteTimeout())
 }
 
 // TestConfig_Validate_CaptchaSkipBlockedInProd verifies CAPTCHA_SKIP is rejected
@@ -224,4 +282,39 @@ func TestEnvInt_InvalidValue(t *testing.T) {
 	t.Setenv("TEST_ENV_INT_KEY", "not-an-int")
 	result := envInt("TEST_ENV_INT_KEY", 42)
 	assert.Equal(t, 42, result)
+}
+
+// The trial deadline must cover its chain (eligibility → PUB-1 → RP-1 → I-1);
+// before, RP_TIMEOUT_MS 900 sat below RP-1's published p95 of 1.5 s.
+func TestConfig_Validate_TrialChainFitsDeadline(t *testing.T) {
+	cfg := validConfig()
+	cfg.RPTimeoutMs = 2000
+	cfg.RequestDeadlineMs = 2749 // 150 + 300 + 2000 + 300 = 2750
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "REQUEST_DEADLINE_MS must be >= ELIGIBILITY_TIMEOUT_MS + RP_TIMEOUT_MS + 2*I1_TIMEOUT_MS (2750)")
+	cfg.RequestDeadlineMs = 2750
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfig_Validate_RP2TimeoutFloor(t *testing.T) {
+	cfg := validConfig()
+	cfg.PaidSignupEnabled = true
+	cfg.BillingURL = "http://billing.internal"
+	cfg.BillingTimeoutMs = 15000
+	cfg.PaidRequestDeadlineMs = 30000
+	cfg.RP2TimeoutMs = 99
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RP2_TIMEOUT_MS must be >= 100ms")
+}
+
+// The handoff lock must outlive the longest request holding it.
+func TestConfig_HandoffLockTTL(t *testing.T) {
+	cfg := validConfig() // 2.5 s deadline → floor of 15 s
+	assert.Equal(t, 15*time.Second, cfg.HandoffLockTTL())
+	cfg.PaidSignupEnabled = true
+	cfg.PaidRequestDeadlineMs = 30000
+	assert.Equal(t, 35*time.Second, cfg.HandoffLockTTL(), "paid: 30 s deadline + 5 s")
+	assert.Equal(t, 8*time.Second, cfg.RP2Timeout())
 }

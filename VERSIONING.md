@@ -88,7 +88,7 @@ helm upgrade bff-signup ./deploy/helm \
 
 | bff-signup | Go (`go.mod`) | `platform-gincommon` |
 |---|---|---|
-| `main` (unreleased) | `1.23+` | `v2.0.0` |
+| `main` (unreleased) | `1.26.11` | `v2.7.0` |
 
 Key runtime dependencies in `go.mod`: `go-redis/v9` (Valkey), `gin-gonic/gin`, `oklog/ulid/v2`, `google/uuid`, `golang.org/x/crypto` (PBKDF2). None are re-exported.
 
