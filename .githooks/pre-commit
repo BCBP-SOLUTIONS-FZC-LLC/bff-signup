@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Local commit gates: tidy, formatting, vet, arch-lint.
-# Run 'make lint' separately if golangci-lint is installed.
+# Local commit gates: formatting and lint.
+# Mirrors iam-authz-enrichment's .githooks/pre-commit. `make lint` uses the
+# installed golangci-lint when it is v2, else CI's pinned version via `go run`.
 set -euo pipefail
 
 echo "[pre-commit] running tidy..."
@@ -9,8 +10,5 @@ make tidy
 echo "[pre-commit] running fmt-check..."
 make fmt-check
 
-echo "[pre-commit] running vet..."
-make vet
-
-echo "[pre-commit] running arch-lint..."
-make arch-lint
+echo "[pre-commit] running lint..."
+make lint
