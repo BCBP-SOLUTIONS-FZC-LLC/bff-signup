@@ -167,3 +167,46 @@ func TestHandoffStore_WithLockTTL(t *testing.T) {
 
 	assert.Same(t, store, store.WithLockTTL(0), "non-positive keeps the current TTL")
 }
+
+// Billing hand-off SB-1: while a 3-D Secure window is open the handoff lives
+// until expires_at + 15 min, so a late re-POST finds the same tenant_id and key.
+func TestHandoffStore_HoldsPastThe3DSecureWindow(t *testing.T) {
+	store, mr := newTestHandoffStore(t)
+	ctx := context.Background()
+	h := sampleHandoff()
+	h.State = domain.StatePaymentActionRequired
+	h.PaymentExpiresAt = time.Now().Add(30 * time.Minute)
+	require.NoError(t, store.Update(ctx, h))
+
+	ttl := mr.TTL("sbff:handoff:" + h.SignupID)
+	assert.Greater(t, ttl, 44*time.Minute, "expires_at - now + 15 min")
+
+	mr.FastForward(31 * time.Minute) // expires_at + 1 min
+	got, err := store.Get(ctx, h.SignupID)
+	require.NoError(t, err)
+	require.NotNil(t, got, "a re-POST after the window must still resume this handoff")
+	assert.Equal(t, h.TenantID, got.TenantID)
+}
+
+func TestHandoffStore_TTLWithoutWindow(t *testing.T) {
+	store, mr := newTestHandoffStore(t)
+	ctx := context.Background()
+	h := sampleHandoff()
+	require.NoError(t, store.Update(ctx, h))
+	assert.Equal(t, 30*time.Minute, mr.TTL("sbff:handoff:"+h.SignupID))
+
+	h.State = domain.StateCompleted
+	require.NoError(t, store.Update(ctx, h))
+	assert.Equal(t, 10*time.Minute, mr.TTL("sbff:handoff:"+h.SignupID))
+}
+
+// A completed paid handoff stays as long as its held session, so a duplicate
+// SB-5 reports the state instead of allocating a new tenant_id.
+func TestHandoffStore_CompletedKeepsPaymentHold(t *testing.T) {
+	store, mr := newTestHandoffStore(t)
+	h := sampleHandoff()
+	h.State = domain.StateCompleted
+	h.PaymentExpiresAt = time.Now().Add(28 * time.Minute)
+	require.NoError(t, store.Update(context.Background(), h))
+	assert.Greater(t, mr.TTL("sbff:handoff:"+h.SignupID), 42*time.Minute)
+}

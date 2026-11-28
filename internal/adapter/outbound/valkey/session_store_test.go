@@ -103,3 +103,65 @@ func TestSessionStore_Create_TTL_Applied(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got, "session must be expired after TTL")
 }
+
+// Billing hand-off SB-1: after a 402 the session outlives Billing's expires_at,
+// and a sliding Refresh never shortens the hold.
+func TestSessionStore_Hold_OutlivesThe3DSecureWindow(t *testing.T) {
+	store, mr := newTestSessionStore(t)
+	ctx := context.Background()
+	sess := testSession()
+	require.NoError(t, store.Create(ctx, sess))
+
+	expiresAt := time.Now().Add(30 * time.Minute)
+	require.NoError(t, store.Hold(ctx, sess.SID, expiresAt.Add(15*time.Minute)))
+	assert.Greater(t, mr.TTL("sbff:sess:"+sess.SID), 44*time.Minute, "expires_at - now + 15 min")
+
+	require.NoError(t, store.Refresh(ctx, sess.SID))
+	assert.Greater(t, mr.TTL("sbff:sess:"+sess.SID), 44*time.Minute, "Refresh must not shorten a hold")
+
+	mr.FastForward(31 * time.Minute) // expires_at + 1 min
+	got, err := store.Get(ctx, sess.SID)
+	require.NoError(t, err)
+	require.NotNil(t, got, "the session must still exist after the 3-D Secure window")
+	assert.Equal(t, sess.SignupID, got.SignupID)
+	assert.Equal(t, expiresAt.Add(15*time.Minute).Unix(), got.HoldUntil)
+}
+
+func TestSessionStore_Hold_NeverShortens(t *testing.T) {
+	store, mr := newTestSessionStore(t)
+	ctx := context.Background()
+	sess := testSession()
+	require.NoError(t, store.Create(ctx, sess))
+
+	later := time.Now().Add(time.Hour)
+	require.NoError(t, store.Hold(ctx, sess.SID, later))
+	require.NoError(t, store.Hold(ctx, sess.SID, time.Now().Add(time.Minute)))
+	assert.Greater(t, mr.TTL("sbff:sess:"+sess.SID), 59*time.Minute)
+
+	got, err := store.Get(ctx, sess.SID)
+	require.NoError(t, err)
+	assert.Equal(t, later.Unix(), got.HoldUntil)
+}
+
+func TestSessionStore_Hold_MissingSessionIsNoop(t *testing.T) {
+	store, _ := newTestSessionStore(t)
+	require.NoError(t, store.Hold(context.Background(), "no-such-sid", time.Now().Add(time.Hour)))
+}
+
+func TestSessionStore_Hold_ErrorWhenServerDown(t *testing.T) {
+	store, mr := newTestSessionStore(t)
+	mr.Close()
+	assert.Error(t, store.Hold(context.Background(), "sid", time.Now().Add(time.Hour)))
+}
+
+// Hold never re-creates a session deleted between its read and its write.
+func TestSessionStore_Hold_DoesNotResurrect(t *testing.T) {
+	store, mr := newTestSessionStore(t)
+	ctx := context.Background()
+	sess := testSession()
+	require.NoError(t, store.Create(ctx, sess))
+	mr.SetTTL("sbff:sess:"+sess.SID, time.Millisecond)
+	mr.FastForward(time.Second)
+	require.NoError(t, store.Hold(ctx, sess.SID, time.Now().Add(time.Hour)))
+	assert.False(t, mr.Exists("sbff:sess:"+sess.SID))
+}

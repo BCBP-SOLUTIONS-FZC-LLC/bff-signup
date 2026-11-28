@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -40,4 +41,12 @@ func TestHandoffStateTransitions(t *testing.T) {
 
 	h.State = domain.StateFailed
 	assert.True(t, h.IsTerminal())
+}
+
+func TestHandoff_PaymentHoldUntil(t *testing.T) {
+	var nilH *domain.Handoff
+	assert.True(t, nilH.PaymentHoldUntil().IsZero())
+	assert.True(t, (&domain.Handoff{}).PaymentHoldUntil().IsZero())
+	exp := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, exp.Add(15*time.Minute), (&domain.Handoff{PaymentExpiresAt: exp}).PaymentHoldUntil())
 }

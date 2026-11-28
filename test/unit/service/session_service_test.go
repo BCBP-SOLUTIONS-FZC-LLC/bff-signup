@@ -176,4 +176,21 @@ func (s *errOnCreateSessionStore) Get(_ context.Context, _ string) (*port.Sessio
 	return nil, nil
 }
 func (s *errOnCreateSessionStore) Refresh(_ context.Context, _ string) error { return nil }
-func (s *errOnCreateSessionStore) Delete(_ context.Context, _ string) error  { return nil }
+func (s *errOnCreateSessionStore) Hold(_ context.Context, _ string, _ time.Time) error {
+	return errors.New("store error")
+}
+func (s *errOnCreateSessionStore) Delete(_ context.Context, _ string) error { return nil }
+
+func TestSessionService_Hold(t *testing.T) {
+	store := fixtures.NewFakeSessionStore()
+	svc := newSessionSvcWithAny(store, fixtures.NewFakeRateLimiter())
+	until := time.Now().Add(time.Hour)
+	require.NoError(t, svc.Hold(context.Background(), "sid", until))
+	require.Len(t, store.Holds, 1)
+
+	svc = newSessionSvcWithAny(&errOnCreateSessionStore{}, fixtures.NewFakeRateLimiter())
+	err := svc.Hold(context.Background(), "sid", until)
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDependencyUnavailable, de.Cause)
+}

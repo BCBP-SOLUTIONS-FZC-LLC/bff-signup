@@ -18,7 +18,9 @@ import (
 type FakeSessionStore struct {
 	mu           sync.Mutex
 	sessions     map[string]*port.Session
-	RefreshCount int // number of Refresh calls (I-02)
+	RefreshCount int         // number of Refresh calls (I-02)
+	Holds        []time.Time // Hold calls (SB-5 3-D Secure window)
+	HoldErr      error       // returned by Hold when set
 }
 
 func NewFakeSessionStore() *FakeSessionStore {
@@ -43,6 +45,17 @@ func (f *FakeSessionStore) Refresh(_ context.Context, sid string) error {
 	defer f.mu.Unlock()
 	f.RefreshCount++
 	return nil
+}
+
+// Hold records HoldUntil (the fake has no TTLs).
+func (f *FakeSessionStore) Hold(_ context.Context, sid string, until time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if sess, ok := f.sessions[sid]; ok && until.Unix() > sess.HoldUntil {
+		sess.HoldUntil = until.Unix()
+	}
+	f.Holds = append(f.Holds, until)
+	return f.HoldErr
 }
 
 func (f *FakeSessionStore) Delete(_ context.Context, sid string) error {

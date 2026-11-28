@@ -55,6 +55,9 @@ type PaidSignupResult struct {
 	// 3-D Secure with PaymentAction.ClientSecret, then re-POSTs SB-5 unchanged.
 	PaymentAction    *port.PaymentAction
 	PaymentExpiresAt string
+	// PaymentHoldUntil: the handoff is kept until then (Billing's expires_at +
+	// domain.PaymentHoldGrace); the handler holds the session as long.
+	PaymentHoldUntil time.Time
 }
 
 // PaidSignupService orchestrates the direct-paid signup provisioning sequence.
@@ -418,6 +421,16 @@ func (s *PaidSignupService) charge(ctx context.Context, h *domain.Handoff, payme
 	case port.ChargeActionRequired:
 		h.State = domain.StatePaymentActionRequired
 		h.BillingSubscriptionID = resp.BillingSubscriptionID
+		// Hold the handoff past Billing's 3-D Secure window (Billing hand-off
+		// SB-1): a late re-POST must find the same tenant_id and charge key. An
+		// unreadable expires_at, or one beyond Billing's window (plus clock skew),
+		// falls back to Billing's 30-minute window from now: the hold stays bounded.
+		now := s.clock.Now()
+		expiresAt, perr := time.Parse(time.RFC3339, resp.ExpiresAt)
+		if perr != nil || expiresAt.After(now.Add(billingActionWindow+billingClockSkew)) {
+			expiresAt = now.Add(billingActionWindow)
+		}
+		h.PaymentExpiresAt = expiresAt.UTC()
 		h.UpdatedAt = s.clock.Now()
 		if err := s.handoffs.Update(ctx, h); err != nil {
 			return nil, domain.NewError(domain.ErrDependencyUnavailable, "handoff store unavailable")
@@ -427,6 +440,7 @@ func (s *PaidSignupService) charge(ctx context.Context, h *domain.Handoff, payme
 			State:            domain.StatePaymentActionRequired,
 			PaymentAction:    resp.Action,
 			PaymentExpiresAt: resp.ExpiresAt,
+			PaymentHoldUntil: h.PaymentHoldUntil(),
 		}, nil
 	case port.ChargeAlreadyExists:
 		// B-I1 is only ever called with this attempt's own key and body, so a
@@ -468,6 +482,13 @@ func (s *PaidSignupService) checkRateLimits(ctx context.Context, clientIP, email
 	}
 	return nil
 }
+
+// billingActionWindow is Billing's 3-D Secure window (SCA_ABANDON_AFTER), used
+// when a 402 carries no readable expires_at.
+const billingActionWindow = 30 * time.Minute
+
+// billingClockSkew is the allowance for Billing's clock when bounding expires_at.
+const billingClockSkew = 5 * time.Minute
 
 // maxSeats is Billing B-I1's licensed_seats limit (1–1000).
 const maxSeats = 1000

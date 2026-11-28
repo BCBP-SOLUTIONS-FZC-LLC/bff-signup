@@ -53,9 +53,42 @@ func (s *SessionStore) Get(ctx context.Context, sid string) (*port.Session, erro
 	return &sess, nil
 }
 
+// Refresh slides the session TTL. EXPIRE … GT never shortens it, so a session
+// held for a 3-D Secure window (Hold) keeps its longer TTL across polls.
 func (s *SessionStore) Refresh(ctx context.Context, sid string) error {
 	return runOp(ctx, func(opCtx context.Context) error {
-		return s.rdb.Expire(opCtx, sessKey(sid), s.ttl).Err()
+		return s.rdb.ExpireGT(opCtx, sessKey(sid), s.ttl).Err()
+	})
+}
+
+// Hold records HoldUntil on the session and extends its TTL to cover it (at
+// least the normal TTL; never shorter than what it already has).
+func (s *SessionStore) Hold(ctx context.Context, sid string, until time.Time) error {
+	sess, err := s.Get(ctx, sid)
+	if err != nil || sess == nil {
+		return err
+	}
+	if u := until.Unix(); u > sess.HoldUntil {
+		sess.HoldUntil = u
+	}
+	ttl := s.ttl
+	if d := time.Until(time.Unix(sess.HoldUntil, 0)); d > ttl {
+		ttl = d
+	}
+	data, err := json.Marshal(sess)
+	if err != nil {
+		return err
+	}
+	return runOp(ctx, func(opCtx context.Context) error {
+		if cur, e := s.rdb.PTTL(opCtx, sessKey(sid)).Result(); e == nil && cur > ttl {
+			ttl = cur
+		}
+		// XX: never re-create a session deleted or expired since the Get.
+		err := s.rdb.SetArgs(opCtx, sessKey(sid), data, redis.SetArgs{Mode: "XX", TTL: ttl}).Err()
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		return err
 	})
 }
 
