@@ -8,6 +8,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — Billing compatibility check (BL-OQ-8 SB-1…SB-4, 2026-11-28)
+
+Billing checked PR #6 against Billing LLD rev 0.68 (`billing-open-items.md` §4.7). Billing now answers `201` to a retry after the 3-D Secure window when the customer did pay.
+
+- **SB-1 (money):** after `402 PAYMENT_ACTION_REQUIRED` the handoff keeps Billing's `expires_at` and lives until `expires_at + 15 min`; the session is held to the same time in Valkey (`hold_until`) and in the cookie `Max-Age`. The sliding session refresh now uses `EXPIRE … GT`, so it never shortens a TTL. A late 3-D Secure re-POST resumes the same `tenant_id` and `charge:<tenant_id>` instead of starting a second charge for a new tenant. A `completed` handoff keeps the hold too; an `expires_at` more than 35 min ahead is replaced by now + 30 min; if the session cannot be held SB-5 answers `503` (re-POST resumes); the session hold never re-creates a deleted session.
+- **SB-3:** NetworkPolicy egress to namespace `billing` is limited to pods labelled `app.kubernetes.io/name: commercial-billing` (new value `networkPolicy.egress.servicePodSelectors`).
+- **SB-4:** LLD v1.4 cites Billing LLD rev 0.68 and the BL-OQ-8 tracker; records the late-3DS `201`, the extra B-I1 statuses and Billing's paid-orphan failure table. The Billing adapter's `403` comment now says a non-meshed caller gets a transport error (`503`), not `403`.
+- **SB-2:** the Pact case list gains the late-3DS `201`; Pact itself still waits for Billing's broker details.
+
 ### Changed — SB-5 aligned to Billing B-I1 (BL-OQ-8, 2026-11-26)
 
 Billing published the final B-I1 contract (Billing LLD rev 0.51 §5.4.2). LLD §19 rewritten.

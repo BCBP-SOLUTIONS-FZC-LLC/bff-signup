@@ -14,7 +14,7 @@ The sibling repos are checked out next to this one, under `/Users/vijayaragavan/
 
 | BFF adapter (`internal/adapter/outbound/…`) | Callee | Contract sources (read in this order) |
 |---|---|---|
-| `billing/client.go` (B-I1) | Billing | `Commercial/commercial-billing-service/docs/lld/commercial-lld-billing-service.md` (§5.4.2 B-I1, §5.3 routes, §10.2 network, §14.3 Pact, §18.7 go-live); `docs/handoff/*`; `docs/lld/billing-open-items.md`; `deploy/helm/` (service name, port, NetworkPolicy, AuthorizationPolicy) |
+| `billing/client.go` (B-I1) | Billing | `Commercial/commercial-billing-service/docs/lld/commercial-lld-billing-service.md` (§5.4.2 B-I1, §5.3 routes, §10.2 network, §14.3 Pact, §18.7 go-live); `docs/lld/billing-open-items.md` (§4.7 BL-OQ-8 tracker; the old `docs/handoff/` folder is gone); `deploy/helm/` (service name, port, NetworkPolicy, AuthorizationPolicy) |
 | `realmprovisioner/client.go` (RP-1, RP-2) | IAM Realm Provisioner | `IAM/iam-realm-provisioner/docs/lld/iam-lld-realm-provisioner-service.md` (§5.3); its `deploy/helm/` |
 | `orgmembership/client.go` (I-1, eligibility CR-4, PUB-1) | IAM Org & Membership | `IAM/iam-org-membership/docs/lld/iam-lld-org-membership-service.md`; its `deploy/helm/` |
 | `catalog/client.go` | IAM Catalog Admin | `IAM/iam-catalog-admin/docs/lld/iam-lld-catalog-admin-config-service.md` |
@@ -67,4 +67,4 @@ say what you looked for).
 
 Then list only DRIFT and GAP rows with the smallest fix for each, ordered by impact
 (money or data loss first, then user-visible errors, then hygiene). Quote the callee's
-version or revision you checked against (e.g. "Billing LLD rev 0.51").
+version or revision you checked against (e.g. "Billing LLD rev 0.68").

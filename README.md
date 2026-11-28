@@ -200,7 +200,7 @@ bff-signup/
 ├── pkg/signupctx/       ← SignupContext{Session, ClientIP}
 ├── test/                ← unit, integration (Valkey), e2e (in-process), fixtures
 ├── deploy/helm/         ← Helm chart (dev/staging/prod values); deploy/monitoring/ alerts + dashboard
-└── docs/                ← LLD v1.3, architecture diagrams, observability, generated Swagger
+└── docs/                ← LLD v1.4, architecture diagrams, observability, generated Swagger
 ```
 
 **Dependency rule:** `domain ← port ← service ← adapter ← cmd`, with one exception: `core/service` may import the metrics package. Enforced by `go-arch-lint` (`.go-arch-lint.yml`).
@@ -357,7 +357,7 @@ helm upgrade bff-signup ./deploy/helm \
 
 | Document | Purpose |
 |---|---|
-| [`docs/lld/signup-bff-lld.md`](docs/lld/signup-bff-lld.md) | Full LLD v1.3 — the runtime contract in detail (§16 open items, §19 paid signup) |
+| [`docs/lld/signup-bff-lld.md`](docs/lld/signup-bff-lld.md) | Full LLD v1.4 — the runtime contract in detail (§16 open items, §19 paid signup) |
 | [`docs/architecture/`](docs/architecture/) | Mermaid diagram sources |
 | [`docs/observability/`](docs/observability/) | Metric registry, runbooks |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Layer model, sequence diagrams, state machine |
