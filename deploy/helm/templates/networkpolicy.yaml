@@ -59,12 +59,18 @@ spec:
       ports:
         - port: 6379
           protocol: TCP
-    # Realm Provisioner, Org & Membership, Catalog (iam) and Billing (billing) via the Istio sidecar
+    # Realm Provisioner, Org & Membership, Catalog (iam) and Billing (billing) via the Istio sidecar.
+    # A namespace listed in servicePodSelectors is narrowed to those pods (Billing hand-off SB-3).
     - to:
         {{- range $eg.serviceNamespaces }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ . }}
+          {{- with index ($eg.servicePodSelectors | default dict) . }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
         {{- end }}
       ports:
         - port: 8080

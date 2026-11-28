@@ -499,12 +499,23 @@ func buildHandlersWithPaid(
 	rp *fixtures.FakeRealmProvisioner,
 	om *fixtures.FakeOrgMembership,
 ) *inboundhttp.Handlers {
-	clk := fixtures.NewFakeClock()
+	return buildHandlersWithPaidSessions(fixtures.NewFakeClock(), fixtures.NewFakeSessionStore(), handoffs, limiter, billing, rp, om)
+}
+
+func buildHandlersWithPaidSessions(
+	clk *fixtures.FakeClock,
+	sessions *fixtures.FakeSessionStore,
+	handoffs *fixtures.FakeHandoffStore,
+	limiter *fixtures.FakeRateLimiter,
+	billing *fixtures.FakeBillingClient,
+	rp *fixtures.FakeRealmProvisioner,
+	om *fixtures.FakeOrgMembership,
+) *inboundhttp.Handlers {
 	idgen := fixtures.NewFakeIDGenerator()
 	orch := service.NewHandoffOrchestrator(handoffs, rp, om, clk, 10*time.Millisecond)
 	pol := domain.PasswordPolicy{MinLength: 12, MaxLength: 128, RequireClasses: 3, NotEmail: true}
 
-	sessionSvc := service.NewSessionService(fixtures.NewFakeSessionStore(), limiter, idgen, clk, 20)
+	sessionSvc := service.NewSessionService(sessions, limiter, idgen, clk, 20)
 	signupSvc := service.NewSignupService(
 		handoffs, limiter, &fixtures.FakeCaptchaVerifier{}, &fixtures.FakePasswordHasher{},
 		orch, idgen, clk, []byte("test-hmac-key-32-bytes-minimum!!"), nil, pol, "2026-09", 3, 5,
@@ -1205,4 +1216,90 @@ func TestHandlerChangeSlug_TenantPending_Returns202(t *testing.T) {
 
 	// I-1 failure → StateTenantPending → handler default branch → 202 Accepted.
 	assert.Equal(t, http.StatusAccepted, w.Code)
+}
+
+// Billing hand-off SB-1: after a 402 the session is held in Valkey and the
+// cookie lives until expires_at + 15 min, so a late re-POST keeps the attempt.
+func TestHandlerSubmitPaid_PaymentActionRequired_HoldsSessionPastExpiresAt(t *testing.T) {
+	expiresAt := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Second)
+	billing := fixtures.NewFakeBillingClient("")
+	billing.Resp = &port.ChargeResponse{
+		Outcome:               port.ChargeActionRequired,
+		BillingSubscriptionID: "sub-3ds",
+		Action:                &port.PaymentAction{Type: "3ds", ClientSecret: "pi_secret"},
+		ExpiresAt:             expiresAt.Format(time.RFC3339),
+	}
+	sessions := fixtures.NewFakeSessionStore()
+	h := buildHandlersWithPaidSessions(&fixtures.FakeClock{T: time.Now()}, sessions, fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
+		billing, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+	).WithPaidRequestDeadline(30 * time.Second)
+
+	w := servePaid(t, h)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	require.Len(t, sessions.Holds, 1)
+	assert.True(t, sessions.Holds[0].Equal(expiresAt.Add(domain.PaymentHoldGrace)))
+
+	var maxAge int
+	for _, ck := range w.Result().Cookies() {
+		if ck.Value == "sid-paid" {
+			maxAge = ck.MaxAge
+		}
+	}
+	assert.Greater(t, maxAge, int(time.Until(expiresAt).Seconds()), "cookie must outlive expires_at")
+	assert.GreaterOrEqual(t, maxAge, int(time.Until(expiresAt.Add(domain.PaymentHoldGrace)).Seconds()))
+}
+
+// A held session keeps a long cookie on the next request too (sliding refresh
+// never cuts the hold short).
+func TestHandlerSubmitPaid_HeldSessionKeepsLongCookie(t *testing.T) {
+	sess := testSession()
+	sess.HoldUntil = time.Now().Add(2 * time.Hour).Unix()
+	h := buildHandlersWithPaid(fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
+		fixtures.NewFakeBillingClient("sub-001"), fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+	).WithPaidRequestDeadline(30 * time.Second)
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("client_ip", "1.2.3.4")
+		c.Set("sid", "sid-paid")
+		c.Set("session", sess)
+		c.Next()
+	})
+	r.POST("/paid", h.SubmitPaid)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/paid", paidBody(t))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	var maxAge int
+	for _, ck := range w.Result().Cookies() {
+		if ck.Value == "sid-paid" {
+			maxAge = ck.MaxAge
+		}
+	}
+	assert.Greater(t, maxAge, 7000, "Max-Age follows HoldUntil, not the 1800 s sliding TTL")
+}
+
+// If the session cannot be held, the 402 is answered 503: a re-POST of the same
+// body resumes the handoff (Billing replays the 402) instead of risking a lapsed
+// session and a second charge.
+func TestHandlerSubmitPaid_HoldFailure_Returns503(t *testing.T) {
+	billing := fixtures.NewFakeBillingClient("")
+	billing.Resp = &port.ChargeResponse{
+		Outcome:               port.ChargeActionRequired,
+		BillingSubscriptionID: "sub-3ds",
+		Action:                &port.PaymentAction{Type: "3ds", ClientSecret: "pi_secret"},
+		ExpiresAt:             time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339),
+	}
+	sessions := fixtures.NewFakeSessionStore()
+	sessions.HoldErr = errors.New("valkey down")
+	h := buildHandlersWithPaidSessions(&fixtures.FakeClock{T: time.Now()}, sessions, fixtures.NewFakeHandoffStore(), fixtures.NewFakeRateLimiter(),
+		billing, fixtures.NewFakeRealmProvisioner("kc"), fixtures.NewFakeOrgMembership("tid"),
+	).WithPaidRequestDeadline(30 * time.Second)
+
+	w := servePaid(t, h)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.NotContains(t, w.Body.String(), "pi_secret", "no client_secret without a held session")
 }

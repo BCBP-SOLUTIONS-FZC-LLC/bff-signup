@@ -45,13 +45,16 @@ type Handoff struct {
 	PaymentRefHMAC string `json:"payment_ref_hmac,omitempty"`
 	// RP2Attempted (SB-5): RP-2 was called with signup:<tenant_id>:rp2 and is not known to
 	// have failed. RP replays by key, so slug, company name and email are frozen.
-	RP2Attempted  bool      `json:"rp2_attempted,omitempty"`
-	LicensedSeats int       `json:"licensed_seats,omitempty"` // 0 for trial; seat count for paid (I-1)
-	SlugAttempts  int       `json:"slug_attempts"`
-	I1Attempts    int       `json:"i1_attempts"`
-	LastError     string    `json:"last_error,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	RP2Attempted bool `json:"rp2_attempted,omitempty"`
+	// PaymentExpiresAt (SB-5): Billing's expires_at from 402 PAYMENT_ACTION_REQUIRED —
+	// the end of the 3-D Secure window. The handoff and session are held past it.
+	PaymentExpiresAt time.Time `json:"payment_expires_at,omitzero"`
+	LicensedSeats    int       `json:"licensed_seats,omitempty"` // 0 for trial; seat count for paid (I-1)
+	SlugAttempts     int       `json:"slug_attempts"`
+	I1Attempts       int       `json:"i1_attempts"`
+	LastError        string    `json:"last_error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // IsTerminal returns true if the state has no further transitions.
@@ -61,6 +64,21 @@ func (h *Handoff) IsTerminal() bool {
 		return true
 	}
 	return false
+}
+
+// PaymentHoldGrace is how long after Billing's 3-D Secure window (expires_at)
+// the handoff and the session are kept, so a late re-POST still resumes the same
+// tenant_id and charge key (Billing hand-off SB-1). A lapsed handoff would make
+// the next SB-5 allocate a new tenant and start a second charge.
+const PaymentHoldGrace = 15 * time.Minute
+
+// PaymentHoldUntil returns the time until which this handoff must be kept, or
+// the zero time when no 3-D Secure window is open.
+func (h *Handoff) PaymentHoldUntil() time.Time {
+	if h == nil || h.PaymentExpiresAt.IsZero() {
+		return time.Time{}
+	}
+	return h.PaymentExpiresAt.Add(PaymentHoldGrace)
 }
 
 // BlocksOtherSignupType reports whether this handoff is an attempt of the other

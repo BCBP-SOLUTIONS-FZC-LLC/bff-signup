@@ -152,7 +152,10 @@ func (c *Client) AuthorizeAndCharge(ctx context.Context, req port.ChargeRequest)
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("billing rejected request: %s", out.ErrorCode))
 
 	case http.StatusForbidden:
-		// INSUFFICIENT_ROLE: wrong service account, or the mesh did not forward the client certificate.
+		// INSUFFICIENT_ROLE: a meshed caller with a wrong or missing principal (wrong
+		// service account, or XFCC not forwarded). Without sidecar injection Billing's
+		// PeerAuthentication STRICT refuses the plaintext connection instead: that is a
+		// transport error, retried as 503, never a 403.
 		return nil, domain.NewError(domain.ErrInternal, fmt.Sprintf("billing rejected caller identity: %s", out.ErrorCode))
 
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:

@@ -8,8 +8,8 @@
 | Service | `bff-signup` (Signup Service / "Signup BFF") |
 | Repository / Go module | `BCBP-SOLUTIONS-FZC-LLC/bff-signup` → `github.com/BCBP-SOLUTIONS-FZC-LLC/bff-signup` (BFF-6, decided) |
 | Status | **Code complete for Phase 1: trial (SB-1…SB-4) and direct-paid (SB-5).** Not deployed to any environment; no release tag. SB-5 is aligned to Billing B-I1 (BL-OQ-8) and stays off (`PAID_SIGNUP_ENABLED=false`) until Billing go-live step 4 (§19.5). **Open before production:** SRE infra BFF-1/2/4 (§16.2). **Deferred:** on-call/PagerDuty (BFF-6, pending procurement), Keycloak existing-realm policy sweep (N-10a, pending Keycloak phase). |
-| Version | 1.3 |
-| Date | 2026-11-27 |
+| Version | 1.4 |
+| Date | 2026-11-28 |
 | Base HLD | `bff-hld-tender-saas-v1.0.md` (Edge / BFF Tier HLD v1.0) + *Signup BFF — TL Responses: HLD Gaps (BFF-1 to BFF-6)*, 21 Oct 2026 |
 | Scope | **Phase 1** — trial signup (SB-1…SB-4, BFF HLD §7.1) and direct-paid signup (SB-5, §19; moved into Phase 1 by Commercial Domain HLD v0.43) |
 | Sibling LLDs | `iam-lld-realm-provisioner-service.md` **rev 1.37** (RP-1 callee; payload expanded), `iam-lld-org-membership-service.md` **rev 2.33** (I-1 + PUB-1 callee; backstop live) |
@@ -23,6 +23,7 @@
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.4 | 2026-11-28 | **Billing compatibility check (Billing LLD rev 0.68; `billing-open-items.md` §4.7, BL-OQ-8 SB-1…SB-4).** SB-1: after `402 PAYMENT_ACTION_REQUIRED` the handoff stores Billing's `expires_at` (`payment_expires_at`) and lives until `expires_at + 15 min`; the session is held to the same time in Valkey (`hold_until`) and in the cookie `Max-Age`, and the sliding refresh never shortens a TTL (`EXPIRE … GT`). A late 3-D Secure re-POST therefore resumes the same `tenant_id` and `charge:<tenant_id>`, never a second charge (§4.1, §4.2, §19.3). SB-3: egress to `billing` narrowed to `app.kubernetes.io/name: commercial-billing` pods (`networkPolicy.egress.servicePodSelectors`). SB-4: citations moved to Billing LLD rev 0.68; Billing's late-3DS fix (`201` after the window), the extra B-I1 statuses (§19.1) and the paid-orphan failure table (§19.6 #7) recorded. SB-2 (Pact) gains the late-3DS `201` case and stays open on Billing's broker details. |
 | 1.3 | 2026-11-27 | **Production-readiness review fixes.** Paid path: trial and paid handoffs never overwrite each other on one session (`409 other_signup_in_progress`); I-1 gets `email_hash` on the trial path only (it made O&M answer `409 TRIAL_ALREADY_USED` to paid customers who once had a trial); Billing errors delete the handoff only when nothing payable exists (declined, expired, price not available); RP-2 freeze (`rp2_attempted`) so `signup:<tenant_id>:rp2` is never reused with another slug/name/email; RP-2 `REALM_ALREADY_DEDICATED` → slug conflict, `OPERATION_IN_PROGRESS` → retryable 503; seats 1–1000; RP-2 `email_verification_sent` read; SB-3 `action` for payment states. Timeouts: `RP_TIMEOUT_MS` 900 → 2000 (RP-1 p95 1.5 s), new `RP2_TIMEOUT_MS` 8000 (RP-2 p95 4 s), `REQUEST_DEADLINE_MS` 2500 → 5000 (validated against each call chain), handoff lock TTL = longest deadline + 5 s (was 15 s, shorter than SB-5). Hardening: client IP validated, terms User-Agent sanitised, Turnstile errors not leaked and `internal-error` = 503, CR-4 400/403 not retried, HSTS. Catalog adapter on CAT-I2. Chart: Turnstile `ServiceEntry` template (was missing), AuthorizationPolicy on in staging/prod, HTTPRoute timeouts (35 s `/paid`, 10 s others) and hostname from `env.PUBLIC_HOST` (was null), probes not routed publicly, egress scoped to destinations incl. istiod, no SA token. §19.4/§19.6 updated. |
 | 1.2 | 2026-11-26 | **BL-OQ-8: SB-5 aligned to Billing B-I1** (Billing LLD rev 0.51 §5.4.2; hand-off `commercial-billing-service/docs/handoff/bl-oq-8-signup-bff.md`). Wire fields renamed to `plan_code` / `licensed_seats` / `payment_method_ref`; identity headers dropped (caller identity is the mesh SPIFFE ID, BIL-AUTH-3). New state `payment_action_required` and 3-D Secure re-POST flow. A repeat SB-5 resumes the same `tenant_id`, so every B-I1 retry reuses `charge:<tenant_id>` and the same body; the handoff is kept on unknown outcomes (timeout, 5xx, `REQUEST_IN_PROGRESS`) and on RP-2 failure after payment. `PAYMENT_DECLINED` → `422`, `CHARGE_EXPIRED` → `410`, `Retry-After` passed through on `503`. `BILLING_TIMEOUT_MS` ≥ 15000 enforced; new `PAID_REQUEST_DEADLINE_MS` (default 30000) for SB-5, also used as gincommon's outer `RequestTimeout` (§19.5). **Fixes found in the 2026-11-27 docs audit:** SB-5 no longer allocates a new `tenant_id` past payment (`409 details_changed`, §19.4); a PUB-1 slug conflict keeps the handoff in `allocated` / `payment_confirmed` so a resubmit with a new slug works (SB-4 could not, no Keycloak user); SB-5 reads `RATE_*`, emits `mode="paid"` metrics and slides the session cookie. **Docs aligned with the code:** status/scope (no longer "Phase 1.5"), RFC 9457 error shape and UPPER_SNAKE `errorCode`s (§5, §17), outbound headers (§5.6), §9.1 state machine (`rejected` is unused; no `allocated → payment_pending`), package layout (§3), dependency rules (§3.2), handoff record fields (§4.2), test layout (§14). |
 | 1.1 | 2026-10-31 | **Spec and behaviour aligned after E2E testing.** Code now follows the spec: `Retry-After` header on every `429`; eligibility and RP-1 retried once on `5xx`/timeout, RP-1 also once on `409 operation_in_progress` (§9.3, §17.2). Spec text corrected to match intended behaviour: allocated resubmit with different details keeps the session's `signup_id` and issues a new `tenant_id` (§5.4); a slug conflict is not a provisioning-failure metric (§9.5); an expired session cookie gives `401` before `404` (§5.5); Turnstile is not retried because its token is single-use (§9.3). |
@@ -238,8 +239,8 @@ There is **no database**. A dedicated **Amazon ElastiCache for Valkey** node (`c
 
 | Key | Type | Value | TTL | Written by |
 |---|---|---|---|---|
-| `sbff:sess:<sid>` | hash | `csrf_hash`, `signup_id`, `created_at` | 30 min (sliding) | SB-1 |
-| `sbff:handoff:<signup_id>` | string (JSON) | Handoff record (§4.2) | 30 min, refreshed on each state change; 10 min after `completed` | SB-2, SB-3, SB-4, SB-5 |
+| `sbff:sess:<sid>` | string (JSON) | `csrf_hash`, `signup_id`, `created_at`, `hold_until` | 30 min (sliding, never shortened); held to `expires_at + 15 min` after a 3-D Secure `402` | SB-1 (SB-5 sets `hold_until`) |
+| `sbff:handoff:<signup_id>` | string (JSON) | Handoff record (§4.2) | 30 min, refreshed on each state change; 10 min after `completed`; in either case at least until `payment_expires_at + 15 min` once a 3-D Secure `402` was seen | SB-2, SB-3, SB-4, SB-5 |
 | `sbff:lock:<signup_id>` | string | owner token | longest request deadline + 5 s, at least 15 s (`SET NX PX`; 35 s with paid signup on) | SB-2, SB-3, SB-4, SB-5 |
 | `sbff:rl:ip:<ip>` | counter | new signup attempts from this IP | 1 h | SB-2, SB-5 (not on an SB-5 payment resume) |
 | `sbff:rl:email:<hmac(email)>` | counter | attempts for this email | 24 h | SB-2, SB-5 (not on an SB-5 payment resume) |
@@ -265,6 +266,7 @@ There is **no database**. A dedicated **Amazon ElastiCache for Valkey** node (`c
   "billing_subscription_id": "sub_...",      // SB-5 only: from B-I1 (also kept while 3-D Secure is pending)
   "payment_ref_hmac": "9f2c...",             // SB-5 only: HMAC of the payment token, never the token
   "licensed_seats":   10,                    // SB-5 only: seats charged, forwarded to I-1
+  "payment_expires_at": "2026-10-16T09:30:00Z", // SB-5 only: Billing's 3-D Secure expires_at (TTL hold)
   "slug_attempts":    1,
   "i1_attempts":      2,
   "last_error":       "org_membership_unavailable",
@@ -273,7 +275,7 @@ There is **no database**. A dedicated **Amazon ElastiCache for Valkey** node (`c
 }
 ```
 
-**Not stored:** password, `hashed_password_seed`, admin email, admin name, CAPTCHA token, payment token (only `payment_ref_hmac`), Billing `client_secret`. Only what I-1, SB-3/SB-4 or an SB-5 resume needs is kept. Company name and slug are organisational data, held at most 30 minutes.
+**Not stored:** password, `hashed_password_seed`, admin email, admin name, CAPTCHA token, payment token (only `payment_ref_hmac`), Billing `client_secret`. Only what I-1, SB-3/SB-4 or an SB-5 resume needs is kept. Company name and slug are organisational data, held at most 30 minutes (up to Billing's `expires_at + 15 min`, about 45 minutes, while an SB-5 3-D Secure window is open).
 
 ---
 
@@ -426,7 +428,7 @@ PUB-1 carries only `x-user-id`. Billing B-I1 carries only `x-tenant-id` and `Ide
 | 1 | `POST /api/v1/internal/tenants/provision-trial` (RP-1) | Realm Provisioner | `rp1` | **Done** — `409 email_already_registered` (CR-1), `terms_acceptance` (A-4) |
 | 2 | `POST /api/v1/internal/tenants` (I-1) | Org & Membership | — (idempotent on `tenant_id`) | Committed |
 | RP-2 | `POST /api/v1/internal/tenants/provision-direct` (SB-5) | Realm Provisioner | `rp2` | Built (RP PR #27); returns `keycloak_user_id` — §19 |
-| B-I1 | `POST /api/v1/internal/subscriptions/authorize-and-charge` (SB-5) | Billing | `charge:<tenant_id>` | Contract final (Billing LLD rev 0.51 §5.4.2) — §19.1 |
+| B-I1 | `POST /api/v1/internal/subscriptions/authorize-and-charge` (SB-5) | Billing | `charge:<tenant_id>` | Contract final (Billing LLD rev 0.68 §5.4.2) — §19.1 |
 
 **E — trial eligibility (done, CR-4):**
 
@@ -1131,8 +1133,8 @@ Signup volume is low and bursty (HLD §13). CPU is dominated by password hashing
 | Admin email | RP-1 → Keycloak | Memory only; HMAC in Valkey ≤ 24 h |
 | Admin name | RP-1 → Keycloak | Memory only |
 | Password | Hashed in memory → RP-1 → Keycloak | Never stored |
-| Company name, slug | RP-1 and I-1 → O&M | Valkey handoff ≤ 30 min |
-| `keycloak_user_id` | I-1 → O&M | Valkey handoff ≤ 30 min |
+| Company name, slug | RP-1 and I-1 → O&M | Valkey handoff ≤ 30 min (≤ `expires_at + 15 min` during 3-D Secure) |
+| `keycloak_user_id` | I-1 → O&M | Valkey handoff ≤ 30 min (≤ `expires_at + 15 min` during 3-D Secure) |
 | Client IP | Rate-limit key | Valkey ≤ 1 h |
 | Terms acceptance (`terms_version`, time) | **Open — N-5** (I-1 field or Audit Log) | Not stored |
 
@@ -1353,7 +1355,7 @@ Per O&M LLD (rev 2.33): idempotent on `tenant_id`, `409 slug_already_taken` on a
 
 D-2 resolved (Commercial Domain HLD §8.3, CD-9 closed): the BFF, not Billing, calls RP-2 and I-1 after Billing confirms the charge.
 
-### 19.1 Billing B-I1 contract (Billing LLD rev 0.51 §5.4.2)
+### 19.1 Billing B-I1 contract (Billing LLD rev 0.68 §5.4.2)
 
 `POST /api/v1/internal/subscriptions/authorize-and-charge`, over Istio mTLS. Billing admits only `cluster.local/ns/bff/sa/bff-signup` (BIL-AUTH-3, read from `X-Forwarded-Client-Cert`); the BFF sends no identity headers.
 
@@ -1378,6 +1380,10 @@ Only the four required fields are sent. B-I1 retries must repeat the body exactl
 | `422 PRICE_NOT_AVAILABLE` | `ErrValidationFailed` | delete handoff | `400` |
 | `400` / `403` / any other status or `errorCode` | `ErrInternal` | handoff **kept** (an unexpected reply may follow a charge; the retry reuses the key) | `500` |
 
+Billing LLD rev 0.68 §5.4.2 also lists `404` (route off: `FEATURE_DIRECT_SIGNUP=false`), `415`, `503 PROVIDER_NOT_ENABLED` and `503 REQUEST_TIMEOUT`. The rows above already cover them: `404` and `415` fall to the last row (`500`, attempt kept), and both `503`s are retried with the same key.
+
+**Mesh errors.** Without sidecar injection on namespace `bff`, Billing's `PeerAuthentication STRICT` refuses the plaintext connection: the BFF sees a transport error and answers `503` (retry). A `403` comes only from a meshed caller with a wrong or missing principal.
+
 ### 19.2 SB-5 flow
 
 ```
@@ -1395,14 +1401,15 @@ CAPTCHA → rate limit (RATE_*; skipped when resuming a payment) → validate �
 → identity_created → I-1 → completed | tenant_pending (SB-3 polls) | slug_conflict (SB-4)
 ```
 
-Every SB-5 response re-issues the session cookie (sliding TTL), so a 3-D Secure re-POST within Billing's 30-minute window still has a session.
+Every SB-5 response re-issues the session cookie (sliding TTL). After a `402 PAYMENT_ACTION_REQUIRED` the session and the handoff are held until Billing's `expires_at + 15 min` (§19.3), so even a 3-D Secure re-POST after the window still has its session and handoff.
 
 ### 19.3 3-D Secure
 
 1. SB-5 returns `202 {status: "payment_action_required", action: {type: "3ds", client_secret}, expires_at}`. `client_secret` is never logged or stored.
 2. The browser completes 3-D Secure with the provider's JS.
 3. The browser re-POSTs SB-5 with the **same body** and a fresh `captcha_token`. The BFF finds the handoff, reuses its `tenant_id`, and calls B-I1 again with the same key and body. Billing answers `201`, `402 PAYMENT_DECLINED`, or `402 PAYMENT_ACTION_REQUIRED` again (still pending).
-4. If 3-D Secure is not completed within 30 min, Billing answers `410 CHARGE_EXPIRED`; the browser starts again.
+4. If 3-D Secure is not completed within 30 min (`SCA_ABANDON_AFTER`), a retry makes Billing re-read the provider subscription: **paid** → `201` (activated as on the normal path; the BFF provisions as usual), **unpaid** → `410 CHARGE_EXPIRED` (the browser starts again), **read fails** → `503` (retry). This is Billing's late-3DS fix (Billing LLD rev 0.68).
+5. **Hold (Billing hand-off SB-1).** On the `402` the handoff records `payment_expires_at` (Billing's `expires_at`; if missing, unparseable or more than 35 min ahead, now + 30 min, so the hold stays bounded). Its Valkey TTL is then at least `expires_at - now + 15 min`, and the session is held to the same time (`hold_until`, cookie `Max-Age`); the sliding refresh uses `EXPIRE … GT` so it never shortens either. A re-POST after the window therefore resumes the same `tenant_id` and `charge:<tenant_id>`: if the customer did pay, Billing activates that one subscription instead of the BFF starting a second charge for a new tenant. A `completed` handoff also keeps the hold (not just 10 min), so a duplicate SB-5 on the held session reports the state. If the session cannot be held (Valkey error), SB-5 answers `503` instead of handing out the `client_secret`; re-POSTing the same body resumes the handoff and Billing replays the `402`. The session hold never re-creates a session that was deleted meanwhile (`SET … XX`).
 
 The re-POST avoids a separate confirm route that would need the hashed password seed in Valkey (§4.2 keeps it out).
 
@@ -1428,19 +1435,19 @@ The re-POST avoids a separate confirm route that would need the hashed password 
 | `PAID_REQUEST_DEADLINE_MS` | `30000` | SB-5 only; ≥ `BILLING_TIMEOUT_MS + RP2_TIMEOUT_MS + 2×I1_TIMEOUT_MS`. With paid on, it is also gincommon's outer `RequestTimeout` and sets the server `WriteTimeout` (+ 500 ms); other routes keep their own `REQUEST_DEADLINE_MS` handler deadline |
 | `PAID_SIGNUP_ENABLED` | `false` | set `true` per environment at step 4 only |
 
-Network: Billing admits pods labelled `app.kubernetes.io/name: bff-signup` in namespace `bff` on 8080; this chart's egress already allows TCP 8080.
+Network: Billing admits pods labelled `app.kubernetes.io/name: bff-signup` in namespace `bff` on 8080; this chart's egress allows TCP 8080 to namespace `billing`, narrowed to pods labelled `app.kubernetes.io/name: commercial-billing` (`networkPolicy.egress.servicePodSelectors`).
 
 Go-live order per environment: (1) SRE-3 deployed → (2) this alignment merged and promoted → (3) Billing `FEATURE_DIRECT_SIGNUP=true`, Pact green, Test-Clock E2E green in staging → (4) BFF Helm `PAID_SIGNUP_ENABLED=true`. Billing's step (5), BL-OQ-2 (Core's recency guard), is Billing-side and recorded done (2026-11-19).
 
 ### 19.6 Remaining work
 
-1. **Pact consumer contract** (Billing LLD §14.3) for `201`, `200` replay, `402 PAYMENT_DECLINED`, `402 PAYMENT_ACTION_REQUIRED`, `409 SUBSCRIPTION_ALREADY_EXISTS`, `503`. This repo has no Pact tooling yet; the cases are covered by `test/unit/adapter/billing_test.go` against a stub server.
+1. **Pact consumer contract** (Billing LLD §14.3) for `201`, `200` replay, `402 PAYMENT_DECLINED`, `402 PAYMENT_ACTION_REQUIRED`, `409 SUBSCRIPTION_ALREADY_EXISTS`, `503`, plus a retry after the 3-D Secure window answering `201` (late 3-D Secure, next to `410`). Blocked on Billing: broker URL, credentials path, provider name and verification branch (BL-OQ-8 Q2). This repo has no Pact tooling yet; the cases are covered by `test/unit/adapter/billing_test.go` against a stub server.
 2. ~~Envoy Gateway route timeout~~ — done: the chart's `HTTPRoute` gives `POST /api/v1/signup/paid` a 35 s request timeout (`ingress.timeouts.paid`) and other routes 10 s.
 3. **Signup front end:** handle `202 payment_action_required` (3-D Secure, then re-POST), `422 PAYMENT_DECLINED`, `410 CHARGE_EXPIRED`, and `503` + `Retry-After` (resubmit the same body).
 4. **Test-Clock E2E in staging**, including one 3-D Secure card: BFF → Billing → RP-2 → paid tenant.
 5. Confirm the RP-2 request field set and error codes against RP LLD §5.3. RP-2 returns `keycloak_user_id` and `email_verification_sent` (both read).
 6. **Log-redaction test** for SB-5 (payment token, `client_secret`), §14.1.
-7. **Paid-orphan reconciliation** (with Billing): a subscription paid but never provisioned survives in Valkey only ~30 min and only in its session. Agree a Billing-side void/refund or alert for subscriptions never matched by `TenantConverted` before paid go-live.
+7. **Paid-orphan reconciliation** — owned by Billing, see Billing LLD rev 0.68 §8.3 (failure table): a subscription paid but never provisioned raises `BillingConversionSagaOverdue` after 30 min and is refunded by an operator with B-O9; a late payment on a signup Billing already ended is parked as `failed:paid_after_end` (SEV-2) for a manual refund. The BFF side keeps the attempt alive past the 3-D Secure window (§19.3 step 5), so a late payment resumes the same tenant instead of creating an orphan.
 8. **To confirm before go-live:** Istio sidecar injection on namespace `bff` (Billing's caller check and the IAM principal rules depend on it); `networkPolicy.egress.valkeyCIDRs` per environment; O&M (I-1, CR-4, PUB-1) and Turnstile latency against the 300 ms / 150 ms timeouts; RP decision on the realm name after an SB-4 slug change on the paid path.
 
 ---
@@ -1467,7 +1474,7 @@ Go-live order per environment: (1) SRE-3 deployed → (2) this alignment merged 
 - `claude/signup-bff-gap.md` and "Signup BFF — Open Gaps for TL Review" — the option analysis behind §16
 - *Signup BFF — TL Responses: HLD Gaps (BFF-1 to BFF-6)*, 21 Oct 2026 — decisions applied in v0.3
 - IAM PRs: iam-realm-provisioner #19, #20; iam-org-membership #25; iam-audit-log #5 (`TenantIdentityProvisioned`)
-- `commercial-lld-billing-service.md` rev 0.51 — §5.4.2 (B-I1), §10.2 (network), §14.3 (Pact), §18.7 (go-live order); hand-off `commercial-billing-service/docs/handoff/bl-oq-8-signup-bff.md`
+- `commercial-lld-billing-service.md` rev 0.68 — §5.4.2 (B-I1), §8.3 (failure table), §10.2 (network), §14.3 (Pact), §18.7 (go-live order); tracker `commercial-billing-service/docs/lld/billing-open-items.md` §4.7 (BL-OQ-8, SB-1…SB-4)
 
 ---
 

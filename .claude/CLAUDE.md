@@ -28,7 +28,7 @@ This file provides guidance to Claude Code when working with **bff-signup**, the
 
 **Paid go-live (LLD §19.5):** after SRE-3, and Billing running `FEATURE_DIRECT_SIGNUP=true` with Pact and the Test-Clock E2E green in staging, set Helm `PAID_SIGNUP_ENABLED=true`. `BILLING_BASE_URL`, `BILLING_TIMEOUT_MS=15000` and `PAID_REQUEST_DEADLINE_MS=30000` are already in `values.yaml`.
 
-**LLD:** `docs/lld/signup-bff-lld.md` v1.3 — canonical reference for all design decisions. §19 documents SB-5 against Billing B-I1, the 3-D Secure flow, retries and the go-live order.
+**LLD:** `docs/lld/signup-bff-lld.md` v1.4 — canonical reference for all design decisions. §19 documents SB-5 against Billing B-I1, the 3-D Secure flow, retries and the go-live order.
 
 ---
 
@@ -92,7 +92,7 @@ make ci              # full local CI gate (tidy + fmt + vet + lint + arch-lint +
 - **SB-INV-4:** RP before I-1, always. `owner_user_id` sent to I-1 is the `keycloak_user_id` returned by RP-1 (trial) or RP-2 (paid).
 - **SB-INV-5:** CAPTCHA and rate limit run before any internal call or password hashing. Exceptions: a same-email resume of an existing identity calls nothing downstream and skips both; an SB-5 payment resume runs CAPTCHA but does not use rate-limit budget.
 - **SB-INV-8:** RP and I-1 carry identical `plan`, slug and name. `plan` is always `starter`/`pro`/`enterprise`, never `"trial"`.
-- **SB-5:** `payment_token` is a provider browser token — no PAN ever reaches the BFF. B-I1 key `charge:<tenant_id>`; retries repeat the key and body. The handoff is kept when the Billing outcome is unknown (timeout, 500/502/503/504, `REQUEST_IN_PROGRESS`) and after payment; it is deleted only on `PAYMENT_DECLINED`, `CHARGE_EXPIRED` or a rejected request. `SUBSCRIPTION_ALREADY_EXISTS` is never used to provision. RP-2 Idempotency-Key: `signup:<tenant_id>:rp2`; once RP-2 was called, slug/name/email are frozen (`rp2_attempted`). A trial and a paid handoff never overwrite each other on one session (`409 other_signup_in_progress`). I-1 gets `email_hash` on the trial path only.
+- **SB-5:** `payment_token` is a provider browser token — no PAN ever reaches the BFF. B-I1 key `charge:<tenant_id>`; retries repeat the key and body. The handoff is kept when the Billing outcome is unknown (timeout, 500/502/503/504, `REQUEST_IN_PROGRESS`) and after payment; it is deleted only on `PAYMENT_DECLINED`, `CHARGE_EXPIRED` or a rejected request. After a `402 PAYMENT_ACTION_REQUIRED` the handoff and session live until Billing's `expires_at + 15 min` (`PaymentHoldUntil`, session `Hold`; session refresh is `EXPIRE … GT`, never shortening). `SUBSCRIPTION_ALREADY_EXISTS` is never used to provision. RP-2 Idempotency-Key: `signup:<tenant_id>:rp2`; once RP-2 was called, slug/name/email are frozen (`rp2_attempted`). A trial and a paid handoff never overwrite each other on one session (`409 other_signup_in_progress`). I-1 gets `email_hash` on the trial path only.
 
 ## Additional implementation invariants
 

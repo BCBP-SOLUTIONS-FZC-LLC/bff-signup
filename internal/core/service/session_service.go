@@ -118,6 +118,14 @@ func (s *SessionService) ValidateCSRF(ctx context.Context, sid, csrfToken string
 	return sess, nil
 }
 
+// Hold keeps the session alive until at least until (SB-5 3-D Secure window).
+func (s *SessionService) Hold(ctx context.Context, sid string, until time.Time) error {
+	if err := s.sessions.Hold(ctx, sid, until); err != nil {
+		return domain.NewError(domain.ErrDependencyUnavailable, "session store unavailable")
+	}
+	return nil
+}
+
 // GetSession returns the session for sid, ErrSessionExpired when it is missing,
 // or ErrDependencyUnavailable when the session store cannot be read.
 func (s *SessionService) GetSession(ctx context.Context, sid string) (*port.Session, error) {

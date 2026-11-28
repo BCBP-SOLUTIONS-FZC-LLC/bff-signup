@@ -127,7 +127,7 @@ When I-1 fails after RP-1 succeeds: inline retries (×2, 100ms/250ms) → `tenan
 
 ### SB-5 — POST /paid (LLD §19)
 
-Same front half as SB-2 (CAPTCHA → rate limit → validate → hash → lock), then Billing B-I1 `charge:<tenant_id>` → PUB-1 → RP-2 (`signup:<tenant_id>:rp2`) → I-1. On `402 PAYMENT_ACTION_REQUIRED` the BFF returns `202 payment_action_required` with the 3-D Secure `client_secret`; the browser authenticates and re-POSTs the same body, and the BFF resumes the same `tenant_id`, so Billing sees the same key and body. Unknown Billing outcomes keep the handoff (`503` + `Retry-After`); declines (`422`) and expiry (`410`) delete it. Past payment, a resubmit never allocates a new `tenant_id`.
+Same front half as SB-2 (CAPTCHA → rate limit → validate → hash → lock), then Billing B-I1 `charge:<tenant_id>` → PUB-1 → RP-2 (`signup:<tenant_id>:rp2`) → I-1. On `402 PAYMENT_ACTION_REQUIRED` the BFF returns `202 payment_action_required` with the 3-D Secure `client_secret`; the browser authenticates and re-POSTs the same body, and the BFF resumes the same `tenant_id`, so Billing sees the same key and body. The handoff and the session are held until Billing's `expires_at + 15 min`, so a late re-POST (Billing then answers `201` if the customer paid) still resumes this attempt. Unknown Billing outcomes keep the handoff (`503` + `Retry-After`); declines (`422`) and expiry (`410`) delete it. Past payment, a resubmit never allocates a new `tenant_id`.
 
 ---
 

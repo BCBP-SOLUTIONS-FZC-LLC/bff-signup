@@ -202,7 +202,7 @@ func (h *Handlers) SubmitTrial(c *gin.Context) {
 	}
 
 	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL.
-	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.sessionTTLSecs)
+	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.cookieMaxAge(sess, time.Time{}))
 
 	switch result.State { //nolint:exhaustive
 	case domain.StateCompleted:
@@ -262,8 +262,9 @@ func (h *Handlers) GetStatus(c *gin.Context) {
 		return
 	}
 
-	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL.
-	middleware.SetSessionCookie(c, sid, h.sessionTTLSecs)
+	// Sliding session (I-02): re-issue the cookie so its Max-Age restarts at the full TTL
+	// (never below a 3-D Secure hold set by SB-5).
+	middleware.SetSessionCookie(c, sid, h.cookieMaxAge(sess, time.Time{}))
 
 	h.log.Debug("signup.status.polled", map[string]interface{}{
 		"signup_id": result.SignupID,
@@ -506,9 +507,25 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 		return
 	}
 
-	// Sliding session (I-02): re-issue the cookie so a 3-D Secure re-POST, which
-	// can come up to Billing's 30-minute window later, still has a session.
-	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.sessionTTLSecs)
+	// Sliding session (I-02). On 3-D Secure the session is held until Billing's
+	// window + 15 min (Billing hand-off SB-1), in Valkey and in the cookie, so a
+	// late re-POST still resumes the same tenant_id and charge key.
+	hold := result.PaymentHoldUntil
+	if !hold.IsZero() {
+		// Own short deadline, detached from SB-5's: the 402 can come late in the request.
+		hctx, hcancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), time.Second)
+		err := h.session.Hold(hctx, middleware.SIDFromContext(c), hold)
+		hcancel()
+		if err != nil {
+			// Without the hold the session could lapse before a late re-POST, which
+			// would then start a new tenant_id and charge. Answer 503: re-POSTing the
+			// same body resumes this handoff and Billing replays the 402.
+			h.log.Warn("signup.paid.session_hold_failed", signupLogFields(c, "submit", "hold_failed", result.SignupID, "", string(result.State)))
+			HandleError(c, err)
+			return
+		}
+	}
+	middleware.SetSessionCookie(c, middleware.SIDFromContext(c), h.cookieMaxAge(sess, hold))
 
 	switch result.State { //nolint:exhaustive
 	case domain.StatePaymentActionRequired:
@@ -543,6 +560,23 @@ func (h *Handlers) SubmitPaid(c *gin.Context) {
 			PollAfterMs: 2000,
 		})
 	}
+}
+
+// cookieMaxAge is the session cookie's Max-Age: the sliding session TTL, or
+// longer while the session is held for a 3-D Secure window (sess.HoldUntil, or
+// a hold set during this request).
+func (h *Handlers) cookieMaxAge(sess *port.Session, hold time.Time) int {
+	maxAge := h.sessionTTLSecs
+	until := hold
+	if sess != nil && sess.HoldUntil > until.Unix() {
+		until = time.Unix(sess.HoldUntil, 0)
+	}
+	if !until.IsZero() {
+		if secs := int(time.Until(until).Seconds()) + 1; secs > maxAge {
+			maxAge = secs
+		}
+	}
+	return maxAge
 }
 
 // acceptLocale derives default_locale from Accept-Language header (allow-listed).

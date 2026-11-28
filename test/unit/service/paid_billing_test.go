@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -395,4 +396,60 @@ func TestPaidBilling_WithRateLimits(t *testing.T) {
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, domain.ErrRateLimited, de.Cause)
 	assert.Equal(t, "ip", de.Details["scope"])
+}
+
+// ── SB-1: hold the attempt past Billing's 3-D Secure window ───────────────────
+
+func TestPaidBilling_3DS_HoldsAttemptPastExpiresAt(t *testing.T) {
+	// A late 3-D Secure: the re-POST after expires_at gets 201 (Billing's fix
+	// re-reads the provider and activates the paid subscription).
+	expiresAt := time.Date(2026, 10, 22, 9, 29, 0, 0, time.UTC) // fake clock 09:00 + 29 min
+	step := actionRequired()
+	step.Resp.ExpiresAt = expiresAt.Format(time.RFC3339)
+	p := newPaidHarness("01JAB00000000000000000H1", step, confirmed("sub-3ds"))
+
+	res, err := p.submit(t)
+	require.NoError(t, err)
+	assert.Equal(t, expiresAt.Add(domain.PaymentHoldGrace), res.PaymentHoldUntil,
+		"the session and handoff are held until expires_at + 15 min")
+
+	h := p.handoff(t)
+	assert.True(t, h.PaymentExpiresAt.Equal(expiresAt))
+	assert.Equal(t, res.PaymentHoldUntil, h.PaymentHoldUntil())
+	firstTenant := h.TenantID
+
+	// Re-POST at expires_at + 1 min: same handoff, same tenant_id and key.
+	res, err = p.submit(t)
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateCompleted, res.State)
+	require.Len(t, p.billing.Calls, 2)
+	assert.Equal(t, p.billing.Calls[0], p.billing.Calls[1])
+	assert.Equal(t, "charge:"+firstTenant, p.billing.Calls[1].IdempotencyKey)
+	require.Len(t, p.rp.DirectCalls, 1)
+	assert.Equal(t, firstTenant, p.rp.DirectCalls[0].TenantID)
+}
+
+func TestPaidBilling_3DS_MissingExpiresAtFallsBackToBillingWindow(t *testing.T) {
+	step := actionRequired()
+	step.Resp.ExpiresAt = "not-a-time"
+	p := newPaidHarness("01JAB00000000000000000H2", step)
+
+	res, err := p.submit(t)
+	require.NoError(t, err)
+	h := p.handoff(t)
+	require.False(t, h.PaymentExpiresAt.IsZero())
+	assert.Equal(t, 30*time.Minute, h.PaymentExpiresAt.Sub(h.UpdatedAt.UTC()), "Billing's SCA_ABANDON_AFTER")
+	assert.Equal(t, h.PaymentHoldUntil(), res.PaymentHoldUntil)
+}
+
+// An expires_at far beyond Billing's window is not trusted: the hold stays bounded.
+func TestPaidBilling_3DS_FarFutureExpiresAtIsBounded(t *testing.T) {
+	step := actionRequired()
+	step.Resp.ExpiresAt = "9999-12-31T23:59:59Z"
+	p := newPaidHarness("01JAB00000000000000000H3", step)
+
+	_, err := p.submit(t)
+	require.NoError(t, err)
+	h := p.handoff(t)
+	assert.Equal(t, 30*time.Minute, h.PaymentExpiresAt.Sub(h.UpdatedAt.UTC()))
 }

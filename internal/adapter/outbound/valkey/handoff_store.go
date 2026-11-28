@@ -47,8 +47,26 @@ func (s *HandoffStore) Create(ctx context.Context, h *domain.Handoff) error {
 		return err
 	}
 	return runOp(ctx, func(opCtx context.Context) error {
-		return s.rdb.Set(opCtx, handoffKey(h.SignupID), data, handoffTTL).Err()
+		return s.rdb.Set(opCtx, handoffKey(h.SignupID), data, handoffTTLFor(h)).Err()
 	})
+}
+
+// handoffTTLFor is the handoff's lifetime: 10 min once completed, else 30 min —
+// extended to Billing's 3-D Secure window + 15 min when one was opened, so a late
+// re-POST still finds the same tenant_id and charge key (Billing hand-off SB-1).
+// The hold applies to a completed handoff too: the session is held as long, and
+// a duplicate SB-5 on it must report the state, not allocate a new tenant_id.
+func handoffTTLFor(h *domain.Handoff) time.Duration {
+	ttl := handoffTTL
+	if h.State == domain.StateCompleted {
+		ttl = completedTTL
+	}
+	if until := h.PaymentHoldUntil(); !until.IsZero() {
+		if d := time.Until(until); d > ttl {
+			ttl = d
+		}
+	}
+	return ttl
 }
 
 func (s *HandoffStore) Get(ctx context.Context, signupID string) (*domain.Handoff, error) {
@@ -72,10 +90,7 @@ func (s *HandoffStore) Get(ctx context.Context, signupID string) (*domain.Handof
 }
 
 func (s *HandoffStore) Update(ctx context.Context, h *domain.Handoff) error {
-	ttl := handoffTTL
-	if h.State == domain.StateCompleted {
-		ttl = completedTTL
-	}
+	ttl := handoffTTLFor(h)
 	data, err := json.Marshal(h)
 	if err != nil {
 		return err

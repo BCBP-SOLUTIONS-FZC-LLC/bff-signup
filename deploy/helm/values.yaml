@@ -79,6 +79,11 @@ networkPolicy:
   egress:
     # :8080 — Realm Provisioner, Org & Membership, Catalog (iam) and Billing (billing).
     serviceNamespaces: [iam, billing]
+    # Optional pod labels per namespace above; a listed namespace admits only those pods.
+    # billing: B-I1 runs only in commercial-billing's pods (Billing hand-off SB-3).
+    servicePodSelectors:
+      billing:
+        app.kubernetes.io/name: commercial-billing
     # :6379 — ElastiCache Valkey. Set to the cache subnet CIDR(s) per environment.
     valkeyCIDRs: ["10.0.0.0/8"]
     # :4317 — OTel collector.
